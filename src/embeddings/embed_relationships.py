@@ -1,7 +1,7 @@
 # src/explore_kg_llm/embeddings/embed_relationships.py
 from langchain_community.vectorstores import Neo4jVector
 from neo4j import GraphDatabase
-from src.embeddings.embedding_client import get_embedding_client
+from src.embeddings.embedding_utils import get_embedding_client, print_search_result
 from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 
 
@@ -114,12 +114,7 @@ def embed_relationships():
 
         query = "drug resistance mechanisms in cancer"
         search_results = relationship_similarity_search(query)
-        for res in search_results:
-            print("-" * 80)
-            print(f"Similarity Score: {res.metadata['score']:.4f}")
-            print(f"Document Content: {res.page_content[:200]}...")
-            print(f"Metadata: {res.metadata}")
-            print("-" * 80)
+        print_search_result(search_results)
 
 if __name__ == "__main__":
     embed_relationships()

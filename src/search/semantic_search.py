@@ -1,5 +1,7 @@
 import argparse
+from langchain_community.vectorstores import Neo4jVector
 from src.embeddings.embed_relationships import relationship_similarity_search
+from src.embeddings.embedding_utils import print_search_result
 
 
 def main():
@@ -16,12 +18,7 @@ def main():
     query = args.query
 
     search_results = relationship_similarity_search(query)
-    for res in search_results:
-        print("-" * 80)
-        print(f"Similarity Score: {res.metadata['score']:.4f}")
-        print(f"Document Content: {res.page_content[:200]}...")
-        print(f"Metadata: {res.metadata}")
-        print("-" * 80)
+    print_search_result(search_results)
 
 
 if __name__ == "__main__":

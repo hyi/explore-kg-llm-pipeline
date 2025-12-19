@@ -1,6 +1,6 @@
 # src/explore_kg_llm/embeddings/embed_publications.py
 from langchain_community.vectorstores import Neo4jVector
-from src.embeddings.embedding_client import get_embedding_client
+from src.embeddings.embedding_utils import get_embedding_client
 from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 
 def embed_publications():
