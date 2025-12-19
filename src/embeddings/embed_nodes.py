@@ -2,6 +2,8 @@
 from langchain_community.vectorstores import Neo4jVector
 from src.embeddings.embedding_utils import get_embedding_client
 from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+from neo4j import GraphDatabase
+
 
 NODE_LABELS = [
     "biolink:Disease",
@@ -12,18 +14,44 @@ NODE_LABELS = [
     "biolink:ChemicalOrDrugOrTreatment",
 ]
 
+def node_index_name(label: str) -> str:
+    return f"{label.replace(':', '_')}_idx"
+
+def ensure_node_vector_indexes():
+    cypher = """
+    CREATE VECTOR INDEX $index_name IF NOT EXISTS
+    FOR (n:`%s`)
+    ON (n.%s)
+    OPTIONS {
+      indexConfig: {
+        `vector.dimensions`: $dims,
+        `vector.similarity_function`: 'cosine'
+      }
+    }
+    """
+    driver = GraphDatabase.driver(
+        NEO4J_URI,
+        auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
+    )
+    with driver.session() as session:
+        for label in NODE_LABELS:
+            session.run(
+                cypher % (label, 'embedding'),
+                index_name=node_index_name(label),
+                dims=1536,
+            )
+
 def get_node_stores():
     stores = {}
 
+    ensure_node_vector_indexes()
     for label in NODE_LABELS:
-        index_name = f"{label.replace(':','_')}_idx"
-
         stores[label] = Neo4jVector.from_existing_index(
             embedding=get_embedding_client(),
             url=NEO4J_URI,
             username=NEO4J_USERNAME,
             password=NEO4J_PASSWORD,
-            index_name=index_name,
+            index_name=node_index_name(label),
         )
     return stores
 
@@ -32,7 +60,7 @@ def node_similarity_search(
     node_stores: dict,
     query: str,
     k_per_index: int = 2,
-    max_total: int = 10,
+    max_total: int = 8,
 ):
     results = []
 
