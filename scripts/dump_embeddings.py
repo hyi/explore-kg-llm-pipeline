@@ -16,6 +16,7 @@ def dump_nodes(path="data/node_embeddings.jsonl"):
       n.id AS node_id,
       labels(n) AS labels,
       n.name AS name,
+      n.node_text AS node_text,
       n.embedding AS embedding
     """
     with driver.session() as session, open(path, "w") as f:

@@ -52,6 +52,7 @@ def get_node_stores():
             username=NEO4J_USERNAME,
             password=NEO4J_PASSWORD,
             index_name=node_index_name(label),
+            text_node_property="node_text"
         )
     return stores
 
@@ -63,12 +64,15 @@ def node_similarity_search(
     max_total: int = 8,
 ):
     results = []
-
+    names_in_results = []
     for label, store in node_stores.items():
         hits = store.similarity_search_with_score(query, k=k_per_index)
         for doc, score in hits:
+            if doc.metadata['name'] in names_in_results:
+                continue
             doc.metadata["node_label"] = label
             doc.metadata["score"] = score
+            names_in_results.append(doc.metadata['name'])
             results.append(doc)
 
     # Sort globally by similarity score

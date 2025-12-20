@@ -11,7 +11,8 @@ driver = GraphDatabase.driver(
 def restore_nodes(path="data/node_embeddings.jsonl"):
     query = """
     MATCH (n {id: $node_id})
-    SET n.embedding = $embedding
+    SET n.embedding = $embedding,
+        n.node_text = $node_text
     """
     with driver.session() as session, open(path) as f:
         for line in f:
