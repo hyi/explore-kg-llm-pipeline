@@ -9,5 +9,6 @@ dependencies = [
     "langchain-community>=0.4.1",
     "langchain-openai>=1.1.5",
     "neo4j>=6.0.3",
+    "pandas>=2.3.3",
     "python-dotenv>=1.2.1",
 ]
