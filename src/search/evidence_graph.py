@@ -39,7 +39,8 @@ class EvidenceGraph:
         out_dir = Path(out_dir)
         out_dir.mkdir(parents=True, exist_ok=True)
 
-        self.relationships_df().to_csv(out_dir / "relationships.csv", index=False)
+        if self.relationships:
+            self.relationships_df().to_csv(out_dir / "relationships.csv", index=False)
         self.nodes_df().to_csv(out_dir / "nodes.csv", index=False)
 
     def save_evidence_html(self, out_file="results/evidence_graph.html"):
@@ -48,11 +49,11 @@ class EvidenceGraph:
         with open(out_file, "w") as f:
             f.write(f"<h1>Semantic Search Results</h1>")
             f.write(f"<h3>Query</h3><p>{self.query}</p>")
+            if self.relationships:
+                f.write("<h2>Relationship Evidence</h2>")
+                f.write(self.relationships_df().to_html(index=False))
+                f.write("<h2>Expanded Nodes</h2>")
 
-            f.write("<h2>Relationship Evidence</h2>")
-            f.write(self.relationships_df().to_html(index=False))
-
-            f.write("<h2>Expanded Nodes</h2>")
             f.write(self.nodes_df().to_html(index=False))
 
     def export_as_cypher(self, out_file="results/evidence_graph.cypher"):

@@ -6,29 +6,25 @@ from src.search.evidence_graph import EvidenceGraph
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Semantic search based on node and relationship embeddings")
+    parser = argparse.ArgumentParser(description="Node semantic search based on node embeddings")
     parser.add_argument(
         "--query",
         type=str,
-        default='genes involved in chemoresistance in cancer',
+        default='condition that causes airways to swell, narrow, and fill with mucus',
         required=False,
-        help="query string for semantic search",
+        help="query string for node semantic search",
     )
 
     args = parser.parse_args()
     query = args.query
     evid_graph = EvidenceGraph(query)
-    evid_graph.relationships = relationship_similarity_search(query)
 
-    entities = extract_entities_from_relationships(evid_graph.relationships)
     nodes = {}
     node_stores = get_node_stores()
-    for entity in entities:
-        nodes[entity] = node_similarity_search(node_stores, entity)
+    nodes[query] = node_similarity_search(node_stores, query)
     evid_graph.nodes = nodes
     evid_graph.save_tables()
     evid_graph.save_evidence_html()
-    evid_graph.export_as_cypher()
 
 if __name__ == "__main__":
     main()

@@ -70,7 +70,8 @@ def embed_relationships():
             MATCH ()-[r]->()
             WHERE r.semantic_text IS NOT NULL
               AND r.embedding IS NULL
-            RETURN elementId(r) AS rid, type(r) as rel_type, r.semantic_text AS text
+            RETURN elementId(r) AS rid, 
+            type(r) as rel_type, r.semantic_text AS text
             """
         )
         for record in results:
