@@ -216,3 +216,6 @@ Keep the implementation simple.
 
 Build the smallest solution that satisfies V1 requirements.
 
+## Testing
+
+* Write all new and modified tests using pytest.
