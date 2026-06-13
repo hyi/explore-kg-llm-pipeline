@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+
+      #graph-shell {
+        height: 540px;
+        border: 1px solid #d9dee7;
+        border-radius: 14px;
+        background:
+          radial-gradient(circle at 20% 20%, rgba(53, 91, 83, 0.10), transparent 28%),
+          linear-gradient(135deg, #fbfaf6 0%, #eef3f0 100%);
+        overflow: hidden;
+        position: relative;
+      }
+
+      #kg-subgraph {
+        width: 100%;
+        height: 455px;
+        cursor: default;
+        user-select: none;
+      }
+
+      #node-details {
+        position: absolute;
+        left: 16px;
+        right: 16px;
+        bottom: 12px;
+        min-height: 46px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.88);
+        border: 1px solid rgba(35, 49, 43, 0.14);
+        font: 13px/1.35 sans-serif;
+        color: #20302a;
+      }
+
+      .edge {
+        stroke: #9ba8a1;
+        stroke-width: 1.5;
+        opacity: 0.55;
+      }
+
+      .edge.active {
+        stroke: #c05a2b;
+        stroke-width: 3;
+        opacity: 0.95;
+      }
+
+      .edge-label {
+        fill: #66736d;
+        font: 10px sans-serif;
+        pointer-events: none;
+      }
+
+      .node circle {
+        stroke: #20302a;
+        stroke-width: 1.5;
+        cursor: grab;
+      }
+
+      .node.dragging circle {
+        cursor: grabbing;
+        stroke-width: 4;
+      }
+
+      .node.focus circle {
+        fill: #2f6f63;
+      }
+
+      .node.context circle {
+        fill: #d8a03d;
+      }
+
+      .node.active circle {
+        stroke: #c05a2b;
+        stroke-width: 4;
+      }
+
+      .node text {
+        fill: #17231e;
+        font: 12px sans-serif;
+        pointer-events: none;
+        paint-order: stroke;
+        stroke: #fbfaf6;
+        stroke-width: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="graph-shell">
+      <svg id="kg-subgraph" viewBox="0 0 1000 640" role="img"></svg>
+      <div id="node-details">
+        Click a node to highlight incident edges. Drag nodes to reposition. Double-click a node to expand its neighbors.
+      </div>
+    </div>
+
+    <script>
+      const Streamlit = {
+        setComponentReady() {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:componentReady", apiVersion: 1 },
+            "*",
+          );
+        },
+        setFrameHeight(height) {
+          window.parent.postMessage(
+            { isStreamlitMessage: true, type: "streamlit:setFrameHeight", height },
+            "*",
+          );
+        },
+        setComponentValue(value) {
+          window.parent.postMessage(
+            {
+              isStreamlitMessage: true,
+              type: "streamlit:setComponentValue",
+              value,
+              dataType: "json",
+            },
+            "*",
+          );
+        },
+      };
+
+      const ns = "http://www.w3.org/2000/svg";
+      const svg = document.getElementById("kg-subgraph");
+      const details = document.getElementById("node-details");
+      let nodes = [];
+      let edges = [];
+      let positions = {};
+      let dragging = null;
+      let dragOffset = { x: 0, y: 0 };
+      let lastClearNonce = null;
+
+      function make(tag, attrs) {
+        const el = document.createElementNS(ns, tag);
+        Object.entries(attrs).forEach(([key, value]) => el.setAttribute(key, value));
+        return el;
+      }
+
+      function svgPoint(event) {
+        const point = svg.createSVGPoint();
+        point.x = event.clientX;
+        point.y = event.clientY;
+        return point.matrixTransform(svg.getScreenCTM().inverse());
+      }
+
+      function render() {
+        svg.replaceChildren();
+        const edgeLayer = make("g", {});
+        const labelLayer = make("g", {});
+        const nodeLayer = make("g", {});
+        svg.appendChild(edgeLayer);
+        svg.appendChild(labelLayer);
+        svg.appendChild(nodeLayer);
+
+        edges.forEach(edge => {
+          const source = positions[edge.source];
+          const target = positions[edge.target];
+          if (!source || !target) return;
+
+          const line = make("line", {
+            x1: source.x,
+            y1: source.y,
+            x2: target.x,
+            y2: target.y,
+            class: "edge",
+            "data-source": edge.source,
+            "data-target": edge.target,
+          });
+          edgeLayer.appendChild(line);
+
+          const label = make("text", {
+            x: (source.x + target.x) / 2,
+            y: (source.y + target.y) / 2,
+            class: "edge-label",
+          });
+          label.textContent = edge.label.replace("biolink:", "");
+          labelLayer.appendChild(label);
+        });
+
+        nodes.forEach(node => {
+          const pos = positions[node.id];
+          if (!pos) return;
+
+          const group = make("g", {
+            class: "node " + (node.is_focus ? "focus" : "context"),
+            transform: `translate(${pos.x}, ${pos.y})`,
+            "data-id": node.id,
+          });
+          const circle = make("circle", { r: node.is_focus ? 17 : 13 });
+          const text = make("text", { x: 20, y: 4 });
+          text.textContent = node.label.length > 38 ? node.label.slice(0, 35) + "..." : node.label;
+          group.appendChild(circle);
+          group.appendChild(text);
+          group.addEventListener("click", () => selectNode(node));
+          group.addEventListener("dblclick", event => {
+            event.preventDefault();
+            Streamlit.setComponentValue({
+              action: "expand",
+              node_id: node.id,
+              positions,
+              nonce: makeNonce(),
+            });
+          });
+          group.addEventListener("pointerdown", event => startDrag(event, node, group));
+          nodeLayer.appendChild(group);
+        });
+      }
+
+      function redrawPositions() {
+        edges.forEach(edge => {
+          const source = positions[edge.source];
+          const target = positions[edge.target];
+          if (!source || !target) return;
+          document
+            .querySelectorAll(`.edge[data-source="${CSS.escape(edge.source)}"][data-target="${CSS.escape(edge.target)}"]`)
+            .forEach(line => {
+              line.setAttribute("x1", source.x);
+              line.setAttribute("y1", source.y);
+              line.setAttribute("x2", target.x);
+              line.setAttribute("y2", target.y);
+            });
+        });
+
+        document.querySelectorAll(".edge-label").forEach((label, index) => {
+          const edge = edges[index];
+          if (!edge) return;
+          const source = positions[edge.source];
+          const target = positions[edge.target];
+          if (!source || !target) return;
+          label.setAttribute("x", (source.x + target.x) / 2);
+          label.setAttribute("y", (source.y + target.y) / 2);
+        });
+      }
+
+      function startDrag(event, node, group) {
+        event.preventDefault();
+        group.setPointerCapture(event.pointerId);
+        const point = svgPoint(event);
+        dragging = { node, group, pointerId: event.pointerId };
+        dragOffset = {
+          x: point.x - positions[node.id].x,
+          y: point.y - positions[node.id].y,
+        };
+        group.classList.add("dragging");
+      }
+
+      svg.addEventListener("pointermove", event => {
+        if (!dragging) return;
+        const point = svgPoint(event);
+        const next = {
+          x: Math.max(24, Math.min(976, point.x - dragOffset.x)),
+          y: Math.max(24, Math.min(430, point.y - dragOffset.y)),
+        };
+        positions[dragging.node.id] = next;
+        dragging.group.setAttribute("transform", `translate(${next.x}, ${next.y})`);
+        redrawPositions();
+      });
+
+      svg.addEventListener("pointerup", event => {
+        if (!dragging) return;
+        dragging.group.releasePointerCapture(event.pointerId);
+        dragging.group.classList.remove("dragging");
+        dragging = null;
+        Streamlit.setComponentValue({
+          action: "layout",
+          positions,
+          nonce: makeNonce(),
+        });
+      });
+
+      function selectNode(node) {
+        document.querySelectorAll(".node").forEach(el => el.classList.remove("active"));
+        document.querySelectorAll(".edge").forEach(el => el.classList.remove("active"));
+        document.querySelector(`.node[data-id="${CSS.escape(node.id)}"]`)?.classList.add("active");
+        const incident = edges.filter(edge => edge.source === node.id || edge.target === node.id);
+        incident.forEach(edge => {
+          document
+            .querySelectorAll(`.edge[data-source="${CSS.escape(edge.source)}"][data-target="${CSS.escape(edge.target)}"]`)
+            .forEach(el => el.classList.add("active"));
+        });
+        const labelText = (node.labels || []).join(", ");
+        details.innerHTML = `<strong>${node.label}</strong><br/>${labelText}<br/>Connected edges in view: ${incident.length}<br/>Double-click this node to expand its neighbors.`;
+      }
+
+      function clearSelection() {
+        document.querySelectorAll(".node").forEach(el => el.classList.remove("active"));
+        document.querySelectorAll(".edge").forEach(el => el.classList.remove("active"));
+        details.textContent =
+          "Click a node to highlight incident edges. Drag nodes to reposition. Double-click a node to expand its neighbors.";
+      }
+
+      function makeNonce() {
+        return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      window.addEventListener("message", event => {
+        if (!event.data || event.data.type !== "streamlit:render") return;
+        nodes = event.data.args.nodes || [];
+        edges = event.data.args.edges || [];
+        positions = event.data.args.positions || {};
+        render();
+        if (event.data.args.clear_nonce !== lastClearNonce) {
+          lastClearNonce = event.data.args.clear_nonce;
+          clearSelection();
+        }
+        Streamlit.setFrameHeight(560);
+      });
+
+      Streamlit.setComponentReady();
+      Streamlit.setFrameHeight(560);
+    </script>
+  </body>
+</html>

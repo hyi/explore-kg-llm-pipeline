@@ -1,4 +1,7 @@
 # src/explore_kg_llm/embeddings/embed_relationships.py
+import math
+
+from langchain_core.documents import Document
 from langchain_community.vectorstores import Neo4jVector
 from neo4j import GraphDatabase
 from src.embeddings.embedding_utils import get_embedding_client, print_search_result
@@ -33,16 +36,35 @@ RELATIONSHIP_TYPES = [
 
 def relationship_similarity_search(query, k=5):
     rel_stores = {}
-    rel_index_list = [f"{rel_type.lower()}_vector_idx" for rel_type in RELATIONSHIP_TYPES]
-    for rel_type, index_name in zip(RELATIONSHIP_TYPES, rel_index_list):
-        rel_stores[rel_type] = Neo4jVector.from_existing_relationship_index(
-            embedding=EMBEDDING,
-            url=NEO4J_URI,
-            username=NEO4J_USERNAME,
-            password=NEO4J_PASSWORD,
-            index_name=index_name,
-            text_node_property="semantic_text"
-        )
+    available_indexes = _relationship_vector_indexes_by_type()
+    skipped = []
+
+    for rel_type in RELATIONSHIP_TYPES:
+        store = None
+        for index_name in _relationship_index_candidates(rel_type, available_indexes):
+            try:
+                store = Neo4jVector.from_existing_relationship_index(
+                    embedding=EMBEDDING,
+                    url=NEO4J_URI,
+                    username=NEO4J_USERNAME,
+                    password=NEO4J_PASSWORD,
+                    index_name=index_name,
+                    text_node_property="semantic_text"
+                )
+                break
+            except ValueError as exc:
+                if "does not exist" not in str(exc).lower():
+                    raise
+
+        if store is None:
+            skipped.append(rel_type)
+            continue
+
+        rel_stores[rel_type] = store
+
+    if not rel_stores:
+        return _relationship_similarity_search_scan(query, k=k)
+
     results = []
     for rel_type, store in rel_stores.items():
         hits = store.similarity_search_with_score(query, k=k)
@@ -56,6 +78,99 @@ def relationship_similarity_search(query, k=5):
         key=lambda x: x.metadata.get("score", 0),
         reverse=True
     )[:k]
+
+
+def _relationship_similarity_search_scan(query, k=5):
+    query_embedding = EMBEDDING.embed_query(query)
+    driver = GraphDatabase.driver(
+        NEO4J_URI,
+        auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
+    )
+    try:
+        with driver.session() as session:
+            rows = session.run(
+                """
+                MATCH ()-[r]->()
+                WHERE type(r) IN $relationship_types
+                  AND r.embedding IS NOT NULL
+                  AND r.semantic_text IS NOT NULL
+                RETURN type(r) AS predicate, r { .* } AS metadata, r.semantic_text AS text
+                """,
+                relationship_types=RELATIONSHIP_TYPES,
+            )
+            results = []
+            for row in rows:
+                metadata = dict(row["metadata"])
+                embedding = metadata.pop("embedding", None)
+                if not embedding:
+                    continue
+                metadata["predicate"] = row["predicate"]
+                metadata["score"] = _cosine_similarity(query_embedding, embedding)
+                results.append(Document(page_content=row["text"], metadata=metadata))
+    finally:
+        driver.close()
+
+    return sorted(
+        results,
+        key=lambda x: x.metadata.get("score", 0),
+        reverse=True
+    )[:k]
+
+
+def _relationship_vector_indexes_by_type():
+    driver = GraphDatabase.driver(
+        NEO4J_URI,
+        auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
+    )
+    try:
+        with driver.session() as session:
+            rows = session.run(
+                """
+                SHOW VECTOR INDEXES
+                YIELD name, entityType, labelsOrTypes
+                WHERE entityType = 'RELATIONSHIP'
+                RETURN name, labelsOrTypes
+                """
+            )
+            indexes = {}
+            for row in rows:
+                for rel_type in row["labelsOrTypes"]:
+                    indexes.setdefault(rel_type, []).append(row["name"])
+            return indexes
+    except Exception:
+        return {}
+    finally:
+        driver.close()
+
+
+def _relationship_index_candidates(rel_type, available_indexes=None):
+    candidates = []
+    if available_indexes and rel_type in available_indexes:
+        candidates.extend(available_indexes[rel_type])
+
+    candidates.extend(
+        [
+            f"{rel_type.lower()}_vector_idx",
+            f"{rel_type.replace(':', '_').lower()}_vector_idx",
+            f"{rel_type.replace(':', '_')}_vector_idx",
+        ]
+    )
+
+    deduplicated = []
+    for index_name in candidates:
+        if index_name not in deduplicated:
+            deduplicated.append(index_name)
+    return deduplicated
+
+
+def _cosine_similarity(left, right):
+    numerator = sum(a * b for a, b in zip(left, right))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if not left_norm or not right_norm:
+        return 0.0
+    return numerator / (left_norm * right_norm)
+
 
 def embed_relationships():
 
@@ -113,7 +228,7 @@ def embed_relationships():
 
         print("Relationship embeddings created")
 
-        query = "drug resistance mechanisms in cancer"
+        query = "drug resistance in cancer"
         search_results = relationship_similarity_search(query)
         print_search_result(search_results)
 
