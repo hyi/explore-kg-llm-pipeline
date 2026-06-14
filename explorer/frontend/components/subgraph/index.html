@@ -22,11 +22,90 @@
         position: relative;
       }
 
+      #clear-selection {
+        position: absolute;
+        top: 12px;
+        right: 12px;
+        z-index: 2;
+        border: 1px solid rgba(35, 49, 43, 0.18);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.9);
+        color: #20302a;
+        cursor: pointer;
+        font: 12px/1 sans-serif;
+        padding: 8px 11px;
+      }
+
+      #reset-view {
+        position: absolute;
+        top: 48px;
+        right: 12px;
+        z-index: 2;
+        border: 1px solid rgba(35, 49, 43, 0.18);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.9);
+        color: #20302a;
+        cursor: pointer;
+        font: 12px/1 sans-serif;
+        padding: 8px 11px;
+      }
+
+      #reset-view:hover {
+        background: #ffffff;
+        border-color: rgba(35, 49, 43, 0.32);
+      }
+
+      #clear-selection:hover {
+        background: #ffffff;
+        border-color: rgba(35, 49, 43, 0.32);
+      }
+
+      #legend {
+        position: absolute;
+        top: 12px;
+        left: 14px;
+        z-index: 2;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        border: 1px solid rgba(35, 49, 43, 0.12);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.82);
+        color: #20302a;
+        font: 11px/1 sans-serif;
+        padding: 7px 10px;
+      }
+
+      .legend-mark {
+        display: inline-block;
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        margin-right: 4px;
+        vertical-align: -1px;
+      }
+
+      .legend-path {
+        background: #c05a2b;
+      }
+
+      .legend-focus {
+        background: #2f6f63;
+      }
+
+      .legend-context {
+        background: #d8a03d;
+      }
+
       #kg-subgraph {
         width: 100%;
         height: 455px;
-        cursor: default;
+        cursor: grab;
         user-select: none;
+      }
+
+      #kg-subgraph.panning {
+        cursor: grabbing;
       }
 
       #node-details {
@@ -49,8 +128,20 @@
         opacity: 0.55;
       }
 
-      .edge.active {
+      .edge.path {
         stroke: #c05a2b;
+        stroke-width: 4;
+        opacity: 0.98;
+      }
+
+      .edge.semantic {
+        stroke: #5577b8;
+        stroke-dasharray: 7 5;
+        opacity: 0.75;
+      }
+
+      .edge.active {
+        stroke: #1f2937;
         stroke-width: 3;
         opacity: 0.95;
       }
@@ -80,8 +171,12 @@
         fill: #d8a03d;
       }
 
+      .node.path circle {
+        fill: #c05a2b;
+      }
+
       .node.active circle {
-        stroke: #c05a2b;
+        stroke: #1f2937;
         stroke-width: 4;
       }
 
@@ -97,9 +192,16 @@
   </head>
   <body>
     <div id="graph-shell">
+      <div id="legend">
+        <span><span class="legend-mark legend-path"></span>Initial path</span>
+        <span><span class="legend-mark legend-focus"></span>Expanded focus</span>
+        <span><span class="legend-mark legend-context"></span>Context</span>
+      </div>
+      <button id="clear-selection" type="button">Clear selection</button>
+      <button id="reset-view" type="button">Reset view</button>
       <svg id="kg-subgraph" viewBox="0 0 1000 640" role="img"></svg>
       <div id="node-details">
-        Click a node to highlight incident edges. Drag nodes to reposition. Double-click a node to expand its neighbors.
+        Click a node for actions. Drag nodes to reposition. Double-click a node to expand connected neighbors.
       </div>
     </div>
 
@@ -137,8 +239,13 @@
       let edges = [];
       let positions = {};
       let dragging = null;
+      let panning = null;
       let dragOffset = { x: 0, y: 0 };
-      let lastClearNonce = null;
+      let suppressNextClick = false;
+      let lastMessage = "";
+      const defaultViewBox = { x: 0, y: 0, width: 1000, height: 640 };
+      let viewBox = { ...defaultViewBox };
+      const nodeMargin = 24;
 
       function make(tag, attrs) {
         const el = document.createElementNS(ns, tag);
@@ -155,6 +262,7 @@
 
       function render() {
         svg.replaceChildren();
+        applyViewBox();
         const edgeLayer = make("g", {});
         const labelLayer = make("g", {});
         const nodeLayer = make("g", {});
@@ -172,7 +280,8 @@
             y1: source.y,
             x2: target.x,
             y2: target.y,
-            class: "edge",
+            class: edgeClass(edge),
+            "data-id": edge.id,
             "data-source": edge.source,
             "data-target": edge.target,
           });
@@ -183,7 +292,7 @@
             y: (source.y + target.y) / 2,
             class: "edge-label",
           });
-          label.textContent = edge.label.replace("biolink:", "");
+          label.textContent = edge.kind === "semantic" ? "similar" : edge.label.replace("biolink:", "");
           labelLayer.appendChild(label);
         });
 
@@ -192,20 +301,28 @@
           if (!pos) return;
 
           const group = make("g", {
-            class: "node " + (node.is_focus ? "focus" : "context"),
+            class: nodeClass(node),
             transform: `translate(${pos.x}, ${pos.y})`,
             "data-id": node.id,
           });
-          const circle = make("circle", { r: node.is_focus ? 17 : 13 });
+          const circle = make("circle", { r: node.is_path_node ? 18 : node.is_focus ? 16 : 13 });
           const text = make("text", { x: 20, y: 4 });
           text.textContent = node.label.length > 38 ? node.label.slice(0, 35) + "..." : node.label;
           group.appendChild(circle);
           group.appendChild(text);
-          group.addEventListener("click", () => selectNode(node));
+          group.addEventListener("click", () => {
+            if (suppressNextClick) return;
+            selectNode(node);
+          });
           group.addEventListener("dblclick", event => {
             event.preventDefault();
+            event.stopPropagation();
+            if (!node.unseen_neighbor_count) {
+              showMessage("No unseen connected neighbors to expand.");
+              return;
+            }
             Streamlit.setComponentValue({
-              action: "expand",
+              action: "expand_connected",
               node_id: node.id,
               positions,
               nonce: makeNonce(),
@@ -216,19 +333,31 @@
         });
       }
 
+      function edgeClass(edge) {
+        const classes = ["edge"];
+        if (edge.is_path_edge) classes.push("path");
+        if (edge.kind === "semantic") classes.push("semantic");
+        return classes.join(" ");
+      }
+
+      function nodeClass(node) {
+        const classes = ["node"];
+        classes.push(node.is_focus ? "focus" : "context");
+        if (node.is_path_node) classes.push("path");
+        return classes.join(" ");
+      }
+
       function redrawPositions() {
         edges.forEach(edge => {
           const source = positions[edge.source];
           const target = positions[edge.target];
           if (!source || !target) return;
-          document
-            .querySelectorAll(`.edge[data-source="${CSS.escape(edge.source)}"][data-target="${CSS.escape(edge.target)}"]`)
-            .forEach(line => {
-              line.setAttribute("x1", source.x);
-              line.setAttribute("y1", source.y);
-              line.setAttribute("x2", target.x);
-              line.setAttribute("y2", target.y);
-            });
+          const line = document.querySelector(`.edge[data-id="${CSS.escape(edge.id)}"]`);
+          if (!line) return;
+          line.setAttribute("x1", source.x);
+          line.setAttribute("y1", source.y);
+          line.setAttribute("x2", target.x);
+          line.setAttribute("y2", target.y);
         });
 
         document.querySelectorAll(".edge-label").forEach((label, index) => {
@@ -244,9 +373,10 @@
 
       function startDrag(event, node, group) {
         event.preventDefault();
+        event.stopPropagation();
         group.setPointerCapture(event.pointerId);
         const point = svgPoint(event);
-        dragging = { node, group, pointerId: event.pointerId };
+        dragging = { node, group, pointerId: event.pointerId, moved: false };
         dragOffset = {
           x: point.x - positions[node.id].x,
           y: point.y - positions[node.id].y,
@@ -255,27 +385,62 @@
       }
 
       svg.addEventListener("pointermove", event => {
+        if (panning) {
+          const point = clientPoint(event);
+          const dx = point.x - panning.clientX;
+          const dy = point.y - panning.clientY;
+          const scaleX = viewBox.width / svg.clientWidth;
+          const scaleY = viewBox.height / svg.clientHeight;
+          viewBox.x = panning.viewBoxX - dx * scaleX;
+          viewBox.y = panning.viewBoxY - dy * scaleY;
+          applyViewBox();
+          return;
+        }
+
         if (!dragging) return;
         const point = svgPoint(event);
         const next = {
-          x: Math.max(24, Math.min(976, point.x - dragOffset.x)),
-          y: Math.max(24, Math.min(430, point.y - dragOffset.y)),
+          x: Math.max(nodeMargin, Math.min(defaultViewBox.width - nodeMargin, point.x - dragOffset.x)),
+          y: Math.max(nodeMargin, Math.min(defaultViewBox.height - nodeMargin, point.y - dragOffset.y)),
         };
         positions[dragging.node.id] = next;
+        dragging.moved = true;
         dragging.group.setAttribute("transform", `translate(${next.x}, ${next.y})`);
         redrawPositions();
       });
 
       svg.addEventListener("pointerup", event => {
+        if (panning) {
+          svg.releasePointerCapture(event.pointerId);
+          svg.classList.remove("panning");
+          panning = null;
+          return;
+        }
+
         if (!dragging) return;
         dragging.group.releasePointerCapture(event.pointerId);
         dragging.group.classList.remove("dragging");
+        suppressNextClick = dragging.moved;
         dragging = null;
-        Streamlit.setComponentValue({
-          action: "layout",
-          positions,
-          nonce: makeNonce(),
-        });
+        if (suppressNextClick) {
+          window.setTimeout(() => {
+            suppressNextClick = false;
+          }, 0);
+        }
+      });
+
+      svg.addEventListener("pointerdown", event => {
+        if (event.target.closest(".node")) return;
+        event.preventDefault();
+        svg.setPointerCapture(event.pointerId);
+        svg.classList.add("panning");
+        const point = clientPoint(event);
+        panning = {
+          clientX: point.x,
+          clientY: point.y,
+          viewBoxX: viewBox.x,
+          viewBoxY: viewBox.y,
+        };
       });
 
       function selectNode(node) {
@@ -284,23 +449,94 @@
         document.querySelector(`.node[data-id="${CSS.escape(node.id)}"]`)?.classList.add("active");
         const incident = edges.filter(edge => edge.source === node.id || edge.target === node.id);
         incident.forEach(edge => {
-          document
-            .querySelectorAll(`.edge[data-source="${CSS.escape(edge.source)}"][data-target="${CSS.escape(edge.target)}"]`)
-            .forEach(el => el.classList.add("active"));
+          document.querySelector(`.edge[data-id="${CSS.escape(edge.id)}"]`)?.classList.add("active");
         });
         const labelText = (node.labels || []).join(", ");
-        details.innerHTML = `<strong>${node.label}</strong><br/>${labelText}<br/>Connected edges in view: ${incident.length}<br/>Double-click this node to expand its neighbors.`;
+        details.innerHTML = `
+          <div><strong>${escapeHtml(node.label)}</strong></div>
+          <div>${escapeHtml(labelText)}</div>
+          <div>Connected edges in view: ${incident.length}</div>
+          <div>Unseen connected neighbors: ${node.unseen_neighbor_count || 0}</div>
+          <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+            <button type="button" data-action="expand_connected" data-node-id="${escapeAttr(node.id)}" ${node.unseen_neighbor_count ? "" : "data-noop='true'"}>Expand connected</button>
+            <button type="button" data-action="expand_similar" data-node-id="${escapeAttr(node.id)}">Expand similar</button>
+            <button type="button" data-action="collapse" data-node-id="${escapeAttr(node.id)}">Collapse / hide</button>
+          </div>
+        `;
       }
 
       function clearSelection() {
         document.querySelectorAll(".node").forEach(el => el.classList.remove("active"));
         document.querySelectorAll(".edge").forEach(el => el.classList.remove("active"));
         details.textContent =
-          "Click a node to highlight incident edges. Drag nodes to reposition. Double-click a node to expand its neighbors.";
+          "Click a node for actions. Drag nodes to reposition. Double-click a node to expand connected neighbors.";
+      }
+
+      function showMessage(message) {
+        if (!message || message === lastMessage) return;
+        lastMessage = message;
+        details.textContent = message;
+        window.setTimeout(() => {
+          if (lastMessage === message) {
+            lastMessage = "";
+            clearSelection();
+          }
+        }, 2200);
       }
 
       function makeNonce() {
         return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      }
+
+      function clientPoint(event) {
+        return { x: event.clientX, y: event.clientY };
+      }
+
+      function applyViewBox() {
+        svg.setAttribute("viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
+      }
+
+      document.getElementById("clear-selection").addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        clearSelection();
+      });
+
+      document.getElementById("reset-view").addEventListener("click", event => {
+        event.preventDefault();
+        event.stopPropagation();
+        viewBox = { ...defaultViewBox };
+        applyViewBox();
+      });
+
+      details.addEventListener("click", event => {
+        const button = event.target.closest("button[data-action]");
+        if (!button) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (button.dataset.noop === "true") {
+          showMessage("No unseen connected neighbors to expand.");
+          return;
+        }
+        Streamlit.setComponentValue({
+          action: button.dataset.action,
+          node_id: button.dataset.nodeId,
+          positions,
+          nonce: makeNonce(),
+        });
+      });
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;");
+      }
+
+      function escapeAttr(value) {
+        return escapeHtml(value);
       }
 
       window.addEventListener("message", event => {
@@ -309,10 +545,7 @@
         edges = event.data.args.edges || [];
         positions = event.data.args.positions || {};
         render();
-        if (event.data.args.clear_nonce !== lastClearNonce) {
-          lastClearNonce = event.data.args.clear_nonce;
-          clearSelection();
-        }
+        showMessage(event.data.args.message || "");
         Streamlit.setFrameHeight(560);
       });
 

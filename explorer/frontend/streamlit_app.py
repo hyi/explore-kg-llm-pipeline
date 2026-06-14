@@ -31,18 +31,14 @@ st.set_page_config(page_title="Semantic Graph Explorer", layout="wide")
 
 def main() -> None:
     st.title("Human-Guided Semantic Graph Explorer")
-    st.caption("Search -> Candidate Paths -> Human Selection -> Path Expansion -> Save Session")
+    st.caption("Search -> Candidate Paths -> Human Exploration -> Save Session")
 
     session = _get_exploration_session()
     _init_ui_state()
 
     with st.sidebar:
         st.header("Search Controls")
-        relationship_k = st.slider("Semantic relationship hits", 1, 25, 10)
-        max_hops = st.slider("Candidate path max hops", 1, 5, 3)
-        paths_per_hit = st.slider("Paths per semantic hit", 1, 10, 3)
-        expansion_limit = st.slider("Expansion candidates", 1, 25, 10)
-        context_neighbors = st.slider("Context neighbors per node", 1, 25, 8)
+        relationship_k = st.slider("Semantic path hits", 1, 25, 5)
         st.divider()
         st.metric("Accepted", len(session.accepted_paths))
         st.metric("Bookmarked", len(session.bookmarked_paths))
@@ -58,36 +54,28 @@ def main() -> None:
         _run_search(
             query=query.strip(),
             relationship_k=relationship_k,
-            max_hops=max_hops,
-            paths_per_hit=paths_per_hit,
             session=session,
         )
 
     candidate_paths: list[Path] = st.session_state.candidate_paths
-    expanded_paths: list[Path] = st.session_state.expanded_paths
 
-    tab_candidates, tab_expanded, tab_saved, tab_history = st.tabs(
-        ["Candidate Paths", "Expanded Paths", "Saved Session", "Search History"]
+    tab_candidates, tab_saved, tab_history = st.tabs(
+        ["Candidate Paths", "Saved Session", "Search History"]
     )
 
     with tab_candidates:
-        _render_path_list(candidate_paths, "candidate", expansion_limit, context_neighbors)
-
-    with tab_expanded:
-        _render_path_list(expanded_paths, "expanded", expansion_limit, context_neighbors)
+        _render_path_list(candidate_paths, "candidate")
 
     with tab_saved:
         _render_saved_session(session)
 
     with tab_history:
-        st.dataframe(session.search_history, use_container_width=True)
+        st.dataframe(session.search_history, width='stretch')
 
 
 def _run_search(
     query: str,
     relationship_k: int,
-    max_hops: int,
-    paths_per_hit: int,
     session: ExplorationSession,
 ) -> None:
     try:
@@ -99,11 +87,8 @@ def _run_search(
                 ranking = PathRankingService()
                 paths = discovery.discover_from_semantic_results(
                     semantic_results,
-                    max_hops=max_hops,
-                    paths_per_hit=paths_per_hit,
                 )
                 st.session_state.candidate_paths = ranking.rank(paths)
-                st.session_state.expanded_paths = []
                 session.add_search(query, len(paths))
             finally:
                 graph.close()
@@ -117,8 +102,6 @@ def _run_search(
 def _render_path_list(
     paths: list[Path],
     namespace: str,
-    expansion_limit: int,
-    context_neighbors: int,
 ) -> None:
     if not paths:
         st.info("No paths to display yet.")
@@ -137,23 +120,29 @@ def _render_path_list(
                 + (f" | Seed predicate: {path.seed_predicate}" if path.seed_predicate else "")
             )
 
-            with st.expander("Path details"):
+            details_open_key = f"path_details_open_{namespace}_{path.id}"
+            st.session_state.setdefault(details_open_key, False)
+            open_cols = st.columns([1, 6])
+            if open_cols[0].button("Show details", key=f"show_details_{namespace}_{path.id}"):
+                st.session_state[details_open_key] = True
+
+            with st.expander("Path details", expanded=st.session_state[details_open_key]):
                 st.write("Nodes")
-                st.dataframe([_node_row(node) for node in path.nodes], use_container_width=True)
+                st.dataframe([_node_row(node) for node in path.nodes], width='stretch')
                 st.write("Edges")
-                st.dataframe([_edge_row(edge) for edge in path.edges], use_container_width=True)
+                st.dataframe([_edge_row(edge) for edge in path.edges], width='stretch')
                 if path.evidence_text:
                     st.write("Semantic evidence")
                     st.write(path.evidence_text)
 
                 st.write("Path context subgraph")
-                _render_context_subgraph(path, namespace, context_neighbors)
+                _render_context_subgraph(path, namespace, details_open_key)
 
             note_key = f"note_{namespace}_{path.id}"
             current_note = st.session_state.exploration_session.user_notes.get(path.id, "")
             note = st.text_area("Note", value=current_note, key=note_key, height=80)
 
-            action_cols = st.columns(5)
+            action_cols = st.columns(4)
             if action_cols[0].button("Accept", key=f"accept_{namespace}_{path.id}"):
                 _get_exploration_session().accept(path)
                 _get_exploration_session().save_note(path.id, note)
@@ -168,43 +157,19 @@ def _render_path_list(
             if action_cols[3].button("Save note", key=f"save_note_{namespace}_{path.id}"):
                 _get_exploration_session().save_note(path.id, note)
                 st.rerun()
-            if action_cols[4].button("Expand", key=f"expand_{namespace}_{path.id}"):
-                _expand_path(path, expansion_limit)
 
 
-def _expand_path(path: Path, expansion_limit: int) -> None:
-    try:
-        with st.spinner("Expanding path endpoints..."):
-            graph = Neo4jGraphAdapter()
-            try:
-                expanded = PathDiscoveryService(graph).expand(path, limit=expansion_limit)
-                ranked = PathRankingService().rank(expanded)
-                existing_signatures = {_path_signature(existing) for existing in st.session_state.expanded_paths}
-                st.session_state.expanded_paths.extend(
-                    candidate for candidate in ranked if _path_signature(candidate) not in existing_signatures
-                )
-            finally:
-                graph.close()
-        st.success(f"Added {len(expanded)} expanded paths.")
-    except Exception as exc:
-        st.error(f"Expansion failed: {exc}")
-        with st.expander("Error details"):
-            st.code(traceback.format_exc())
-
-
-def _render_context_subgraph(path: Path, namespace: str, context_neighbors: int) -> None:
-    focus_key = f"context_focus_{namespace}_{path.id}"
+def _render_context_subgraph(path: Path, namespace: str, details_open_key: str) -> None:
+    focus_key = f"context_connected_focus_{namespace}_{path.id}"
     subgraph_key = f"context_subgraph_{namespace}_{path.id}"
+    semantic_key = f"context_semantic_{namespace}_{path.id}"
+    hidden_key = f"context_hidden_{namespace}_{path.id}"
     positions_key = f"context_positions_{namespace}_{path.id}"
     expanded_from_key = f"context_expanded_from_{namespace}_{path.id}"
-    clear_key = f"context_clear_selection_{namespace}_{path.id}"
+    message_key = f"context_message_{namespace}_{path.id}"
     st.session_state.setdefault(focus_key, path.node_element_ids)
-    st.session_state.setdefault(clear_key, 0)
-
-    cols = st.columns([3, 1])
-    with cols[1]:
-        if st.button("Clear selection", key=f"clear_context_selection_{namespace}_{path.id}"):
-            st.session_state[clear_key] += 1
+    st.session_state.setdefault(semantic_key, {})
+    st.session_state.setdefault(hidden_key, set())
 
     if subgraph_key not in st.session_state:
         try:
@@ -212,7 +177,6 @@ def _render_context_subgraph(path: Path, namespace: str, context_neighbors: int)
             try:
                 st.session_state[subgraph_key] = graph.context_subgraph(
                     st.session_state[focus_key],
-                    neighbors_per_node=context_neighbors,
                 )
             finally:
                 graph.close()
@@ -220,13 +184,29 @@ def _render_context_subgraph(path: Path, namespace: str, context_neighbors: int)
             st.warning(f"Could not load context subgraph: {exc}")
             return
 
-    subgraph = st.session_state[subgraph_key]
+    path_node_ids = set(path.node_element_ids)
+    path_edge_ids = {edge.element_id for edge in path.edges}
+    subgraph = _filter_hidden_subgraph(
+        _merge_subgraphs(
+            st.session_state[subgraph_key],
+            list(st.session_state[semantic_key].values()),
+        ),
+        hidden_node_ids=st.session_state[hidden_key],
+        protected_node_ids=path_node_ids,
+    )
     if not subgraph["nodes"]:
         st.caption("No context subgraph available.")
         return
 
-    component_nodes = _component_nodes(subgraph)
-    component_edges = _component_edges(subgraph)
+    visible_node_ids = {node["id"] for node in subgraph["nodes"]}
+    unseen_neighbor_counts = _unseen_neighbor_counts(visible_node_ids)
+    component_nodes = _component_nodes(
+        subgraph,
+        path_node_ids=path_node_ids,
+        connected_focus_ids=set(st.session_state[focus_key]),
+        unseen_neighbor_counts=unseen_neighbor_counts,
+    )
+    component_edges = _component_edges(subgraph, path_edge_ids=path_edge_ids)
     positions = _merge_layout_positions(
         nodes=component_nodes,
         edges=component_edges,
@@ -239,7 +219,7 @@ def _render_context_subgraph(path: Path, namespace: str, context_neighbors: int)
         nodes=component_nodes,
         edges=component_edges,
         positions=positions,
-        clear_nonce=st.session_state[clear_key],
+        message=st.session_state.pop(message_key, ""),
         key=f"subgraph_component_{namespace}_{path.id}",
         default=None,
     )
@@ -255,37 +235,143 @@ def _render_context_subgraph(path: Path, namespace: str, context_neighbors: int)
     if event_positions:
         st.session_state[positions_key] = event_positions
 
-    if component_event.get("action") == "layout":
+    action = component_event.get("action")
+    selected_id = component_event.get("node_id")
+    if action == "expand_connected":
+        if selected_id:
+            visible_node_ids = {node["id"] for node in subgraph["nodes"]}
+            try:
+                graph = Neo4jGraphAdapter()
+                try:
+                    has_unseen = graph.has_unseen_neighbors(selected_id, visible_node_ids)
+                finally:
+                    graph.close()
+            except Exception as exc:
+                st.warning(f"Could not check connected expansion: {exc}")
+                return
+
+            if not has_unseen:
+                st.session_state[message_key] = "No unseen connected neighbors to expand."
+                st.session_state[details_open_key] = True
+                st.rerun()
+
+            st.session_state[hidden_key].discard(selected_id)
+            if selected_id not in st.session_state[focus_key]:
+                st.session_state[focus_key].append(selected_id)
+            st.session_state[expanded_from_key] = selected_id
+        st.session_state.pop(subgraph_key, None)
+        st.session_state[details_open_key] = True
         st.rerun()
 
-    if component_event.get("action") == "expand":
+    if action == "expand_similar":
+        if selected_id:
+            st.session_state[hidden_key].discard(selected_id)
+            try:
+                graph = Neo4jGraphAdapter()
+                try:
+                    st.session_state[semantic_key][selected_id] = graph.semantic_similar_nodes(selected_id)
+                finally:
+                    graph.close()
+            except Exception as exc:
+                st.warning(f"Could not expand semantically similar nodes: {exc}")
+                return
+        st.session_state[expanded_from_key] = selected_id
+        st.session_state[details_open_key] = True
+        st.rerun()
+
+    if action == "collapse":
         selected_id = component_event.get("node_id")
-        if selected_id and selected_id not in st.session_state[focus_key]:
-            st.session_state[focus_key].append(selected_id)
+        if selected_id and selected_id not in path_node_ids:
+            st.session_state[focus_key] = [
+                node_id for node_id in st.session_state[focus_key] if node_id != selected_id
+            ]
+            st.session_state[hidden_key].add(selected_id)
+        if selected_id:
+            st.session_state[semantic_key].pop(selected_id, None)
         st.session_state[expanded_from_key] = selected_id
         st.session_state.pop(subgraph_key, None)
+        st.session_state[details_open_key] = True
         st.rerun()
 
 
-def _component_nodes(subgraph: dict[str, list[dict[str, object]]]) -> list[dict[str, object]]:
+def _merge_subgraphs(
+    base: dict[str, list[dict[str, object]]],
+    additions: list[dict[str, list[dict[str, object]]]],
+) -> dict[str, list[dict[str, object]]]:
+    nodes_by_id = {node["id"]: node for node in base["nodes"]}
+    edges_by_id = {edge["id"]: edge for edge in base["edges"]}
+    for subgraph in additions:
+        for node in subgraph["nodes"]:
+            nodes_by_id[node["id"]] = node
+        for edge in subgraph["edges"]:
+            edges_by_id[edge["id"]] = edge
+    return {
+        "nodes": list(nodes_by_id.values()),
+        "edges": list(edges_by_id.values()),
+    }
+
+
+def _filter_hidden_subgraph(
+    subgraph: dict[str, list[dict[str, object]]],
+    hidden_node_ids: set[str],
+    protected_node_ids: set[str],
+) -> dict[str, list[dict[str, object]]]:
+    hidden = hidden_node_ids - protected_node_ids
+    if not hidden:
+        return subgraph
+
+    nodes = [node for node in subgraph["nodes"] if node["id"] not in hidden]
+    visible_node_ids = {node["id"] for node in nodes}
+    edges = [
+        edge
+        for edge in subgraph["edges"]
+        if edge["source"] in visible_node_ids and edge["target"] in visible_node_ids
+    ]
+    return {"nodes": nodes, "edges": edges}
+
+
+def _component_nodes(
+    subgraph: dict[str, list[dict[str, object]]],
+    path_node_ids: set[str],
+    connected_focus_ids: set[str],
+    unseen_neighbor_counts: dict[str, int],
+) -> list[dict[str, object]]:
     return [
         {
             "id": node["id"],
             "label": node["label"],
             "labels": node.get("labels", []),
-            "is_focus": node.get("is_focus", False),
+            "is_focus": node["id"] in connected_focus_ids,
+            "is_path_node": node["id"] in path_node_ids,
+            "unseen_neighbor_count": unseen_neighbor_counts.get(node["id"], 0),
         }
         for node in subgraph["nodes"]
     ]
 
 
-def _component_edges(subgraph: dict[str, list[dict[str, object]]]) -> list[dict[str, object]]:
+def _unseen_neighbor_counts(node_ids: set[str]) -> dict[str, int]:
+    try:
+        graph = Neo4jGraphAdapter()
+        try:
+            return graph.unseen_neighbor_counts(node_ids)
+        finally:
+            graph.close()
+    except Exception:
+        return {}
+
+
+def _component_edges(
+    subgraph: dict[str, list[dict[str, object]]],
+    path_edge_ids: set[str],
+) -> list[dict[str, object]]:
     return [
         {
             "id": edge["id"],
             "source": edge["source"],
             "target": edge["target"],
             "label": edge["label"],
+            "kind": edge.get("kind", "graph"),
+            "is_path_edge": edge["id"] in path_edge_ids,
         }
         for edge in subgraph["edges"]
     ]
@@ -434,7 +520,7 @@ def _render_saved_paths(paths: object, session: ExplorationSession) -> None:
             }
         )
     if rows:
-        st.dataframe(rows, use_container_width=True)
+        st.dataframe(rows, width='stretch')
     else:
         st.caption("None yet.")
 
@@ -457,13 +543,6 @@ def _edge_row(edge: object) -> dict[str, object]:
     }
 
 
-def _path_signature(path: Path) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    return (
-        tuple(node.element_id for node in path.nodes),
-        tuple(edge.element_id for edge in path.edges),
-    )
-
-
 def _get_exploration_session() -> ExplorationSession:
     if "exploration_session" not in st.session_state:
         st.session_state.exploration_session = ExplorationSession()
@@ -472,7 +551,6 @@ def _get_exploration_session() -> ExplorationSession:
 
 def _init_ui_state() -> None:
     st.session_state.setdefault("candidate_paths", [])
-    st.session_state.setdefault("expanded_paths", [])
 
 
 if __name__ == "__main__":

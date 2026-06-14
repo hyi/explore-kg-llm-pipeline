@@ -11,7 +11,6 @@ class PathDiscoveryService:
     def discover_from_semantic_results(
         self,
         results: SemanticSearchResult,
-        max_hops: int = 3,
         paths_per_hit: int = 3,
     ) -> list[Path]:
         paths = []
@@ -24,7 +23,6 @@ class PathDiscoveryService:
                 metadata=metadata,
                 score=score,
                 evidence_text=evidence_text,
-                max_hops=max_hops,
                 limit=paths_per_hit,
             ):
                 signature = (
