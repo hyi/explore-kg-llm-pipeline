@@ -146,6 +146,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+local-values.yaml
 
 # Spyder project settings
 .spyderproject
