@@ -1,5 +1,6 @@
 # src/explore_kg_llm/embeddings/embed_relationships.py
 import math
+from functools import lru_cache
 
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Neo4jVector
@@ -35,34 +36,9 @@ RELATIONSHIP_TYPES = [
 ]
 
 def relationship_similarity_search(query, k=5):
-    rel_stores = {}
-    available_indexes = _relationship_vector_indexes_by_type()
-    skipped = []
-
-    for rel_type in RELATIONSHIP_TYPES:
-        store = None
-        for index_name in _relationship_index_candidates(rel_type, available_indexes):
-            try:
-                store = Neo4jVector.from_existing_relationship_index(
-                    embedding=EMBEDDING,
-                    url=NEO4J_URI,
-                    username=NEO4J_USERNAME,
-                    password=NEO4J_PASSWORD,
-                    index_name=index_name,
-                    text_node_property="semantic_text"
-                )
-                break
-            except ValueError as exc:
-                if "does not exist" not in str(exc).lower():
-                    raise
-
-        if store is None:
-            skipped.append(rel_type)
-            continue
-
-        rel_stores[rel_type] = store
-
+    rel_stores = _relationship_stores()
     if not rel_stores:
+        _relationship_stores.cache_clear()
         return _relationship_similarity_search_scan(query, k=k)
 
     results = []
@@ -78,6 +54,30 @@ def relationship_similarity_search(query, k=5):
         key=lambda x: x.metadata.get("score", 0),
         reverse=True
     )[:k]
+
+
+@lru_cache(maxsize=1)
+def _relationship_stores():
+    rel_stores = {}
+    available_indexes = _relationship_vector_indexes_by_type()
+
+    for rel_type in RELATIONSHIP_TYPES:
+        for index_name in _relationship_index_candidates(rel_type, available_indexes):
+            try:
+                rel_stores[rel_type] = Neo4jVector.from_existing_relationship_index(
+                    embedding=EMBEDDING,
+                    url=NEO4J_URI,
+                    username=NEO4J_USERNAME,
+                    password=NEO4J_PASSWORD,
+                    index_name=index_name,
+                    text_node_property="semantic_text"
+                )
+                break
+            except ValueError as exc:
+                if "does not exist" not in str(exc).lower():
+                    raise
+
+    return rel_stores
 
 
 def _relationship_similarity_search_scan(query, k=5):
