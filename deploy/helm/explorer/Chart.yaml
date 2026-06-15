@@ -1,0 +1,6 @@
+apiVersion: v2
+name: explorer
+description: Human-guided semantic graph exploration Streamlit app
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

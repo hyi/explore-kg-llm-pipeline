@@ -1,0 +1,73 @@
+replicaCount: 1
+
+image:
+  repository: hongyi/kg-explorer-toolkit
+  pullPolicy: IfNotPresent
+  tag: "1.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+podLabels: {}
+
+podSecurityContext: {}
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+  readOnlyRootFilesystem: false
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+
+ingress:
+  enabled: true
+  annotations: 
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    cert-manager.io/cluster-issuer: letsencrypt
+  hosts:
+    - host: kg-explorer.apps.renci.org
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: 
+   - secretName: kg-explorer.apps.renci.org-tls
+     hosts:
+       - kg-explorer.apps.renci.org
+
+resources: 
+  limits:
+    cpu: 1
+    memory: 6Gi
+    ephemeral-storage: 100Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 80
+
+env:
+  existingSecret: ""
+  createSecret: true
+  neo4jUri: ""
+  neo4jUsername: ""
+  neo4jPassword: ""
+  openaiApiKey: ""
+
+extraEnv: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
