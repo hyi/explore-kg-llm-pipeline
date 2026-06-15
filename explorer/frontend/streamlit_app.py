@@ -124,9 +124,6 @@ def _render_path_list(
 
             details_open_key = f"path_details_open_{namespace}_{path.id}"
             st.session_state.setdefault(details_open_key, False)
-            open_cols = st.columns([1, 6])
-            if open_cols[0].button("Show details", key=f"show_details_{namespace}_{path.id}"):
-                st.session_state[details_open_key] = True
 
             with st.expander("Path details", expanded=st.session_state[details_open_key]):
                 st.write("Nodes")
