@@ -11,4 +11,10 @@ dependencies = [
     "neo4j>=6.0.3",
     "pandas>=2.3.3",
     "python-dotenv>=1.2.1",
+    "streamlit>=1.52.1",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
 ]
