@@ -82,13 +82,15 @@ def _run_search(
         with st.spinner("Running semantic search and discovering candidate paths..."):
             graph = Neo4jGraphAdapter()
             try:
-                semantic_results = SemanticSearchService().search(query, relationship_k=relationship_k)
+                semantic_fetch_k = min(max(relationship_k * 3, relationship_k + 5), 50)
+                semantic_results = SemanticSearchService().search(query, relationship_k=semantic_fetch_k)
                 discovery = PathDiscoveryService(graph)
                 ranking = PathRankingService()
                 paths = discovery.discover_from_semantic_results(
                     semantic_results,
+                    max_paths=relationship_k,
                 )
-                st.session_state.candidate_paths = ranking.rank(paths)
+                st.session_state.candidate_paths = ranking.rank(paths)[:relationship_k]
                 session.add_search(query, len(paths))
             finally:
                 graph.close()

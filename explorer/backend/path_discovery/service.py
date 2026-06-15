@@ -12,6 +12,7 @@ class PathDiscoveryService:
         self,
         results: SemanticSearchResult,
         paths_per_hit: int = 3,
+        max_paths: int | None = None,
     ) -> list[Path]:
         paths = []
         seen = set()
@@ -33,7 +34,6 @@ class PathDiscoveryService:
                     continue
                 seen.add(signature)
                 paths.append(path)
+                if max_paths is not None and len(paths) >= max_paths:
+                    return paths
         return paths
-
-    def expand(self, path: Path, limit: int = 10) -> list[Path]:
-        return self.graph.expand_path(path, limit=limit)

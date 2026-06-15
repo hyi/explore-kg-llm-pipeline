@@ -107,57 +107,6 @@ class Neo4jGraphAdapter:
                     paths.append(path)
         return paths
 
-    def expand_path(self, path: Path, limit: int = 10) -> list[Path]:
-        if not path.nodes:
-            return []
-
-        limit = _bounded_int(limit, minimum=1, maximum=50)
-        cypher = """
-        MATCH (boundary)
-        WHERE elementId(boundary) IN $endpoint_ids
-        MATCH (boundary)-[r]-(neighbor)
-        WHERE NOT elementId(neighbor) IN $existing_ids
-        RETURN
-          boundary {
-            .*,
-            element_id: elementId(boundary),
-            labels: labels(boundary),
-            id: coalesce(boundary.id, boundary.name, elementId(boundary)),
-            display_name: coalesce(boundary.name, boundary.id, elementId(boundary))
-          } AS boundary,
-          neighbor {
-            .*,
-            element_id: elementId(neighbor),
-            labels: labels(neighbor),
-            id: coalesce(neighbor.id, neighbor.name, elementId(neighbor)),
-            display_name: coalesce(neighbor.name, neighbor.id, elementId(neighbor))
-          } AS neighbor,
-          r {
-            .*,
-            element_id: elementId(r),
-            type: type(r),
-            start_element_id: elementId(startNode(r)),
-            end_element_id: elementId(endNode(r)),
-            subject: coalesce(startNode(r).name, startNode(r).id, elementId(startNode(r))),
-            object: coalesce(endNode(r).name, endNode(r).id, elementId(endNode(r)))
-          } AS relationship
-        LIMIT $limit
-        """
-
-        expansions = []
-        with self._driver.session() as session:
-            records = session.run(
-                cypher,
-                endpoint_ids=path.endpoint_element_ids,
-                existing_ids=path.node_element_ids,
-                limit=limit,
-            )
-            for record in records:
-                expanded = self._append_expansion(path, record["boundary"], record["neighbor"], record["relationship"])
-                if expanded:
-                    expansions.append(expanded)
-        return expansions
-
     def context_subgraph(
         self,
         focus_element_ids: list[str],
@@ -362,38 +311,6 @@ class Neo4jGraphAdapter:
             seed_predicate=seed_predicate,
             evidence_text=evidence_text,
         )
-
-    def _append_expansion(
-        self,
-        path: Path,
-        boundary_projection: dict[str, Any],
-        neighbor_projection: dict[str, Any],
-        edge_projection: dict[str, Any],
-    ) -> Path | None:
-        boundary = _node_from_projection(boundary_projection)
-        neighbor = _node_from_projection(neighbor_projection)
-        edge = _edge_from_projection(edge_projection)
-
-        if boundary.element_id == path.nodes[0].element_id:
-            nodes = [neighbor, *path.nodes]
-            edges = [edge, *path.edges]
-        elif boundary.element_id == path.nodes[-1].element_id:
-            nodes = [*path.nodes, neighbor]
-            edges = [*path.edges, edge]
-        else:
-            return None
-
-        return Path(
-            nodes=nodes,
-            edges=edges,
-            score=path.score,
-            source="expanded_path",
-            seed_subject=path.seed_subject,
-            seed_object=path.seed_object,
-            seed_predicate=path.seed_predicate,
-            evidence_text=path.evidence_text,
-        )
-
 
 def _node_from_projection(projection: dict[str, Any]) -> Node:
     properties = dict(projection)
