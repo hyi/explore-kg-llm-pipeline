@@ -243,6 +243,7 @@
       let dragOffset = { x: 0, y: 0 };
       let suppressNextClick = false;
       let lastMessage = "";
+      let selectedNodeId = null;
       const defaultViewBox = { x: 0, y: 0, width: 1000, height: 640 };
       let viewBox = { ...defaultViewBox };
       const nodeMargin = 24;
@@ -331,6 +332,9 @@
           group.addEventListener("pointerdown", event => startDrag(event, node, group));
           nodeLayer.appendChild(group);
         });
+        if (selectedNodeId && nodes.some(node => node.id === selectedNodeId)) {
+          selectNode(nodes.find(node => node.id === selectedNodeId));
+        }
       }
 
       function edgeClass(edge) {
@@ -444,6 +448,7 @@
       });
 
       function selectNode(node) {
+        selectedNodeId = node.id;
         document.querySelectorAll(".node").forEach(el => el.classList.remove("active"));
         document.querySelectorAll(".edge").forEach(el => el.classList.remove("active"));
         document.querySelector(`.node[data-id="${CSS.escape(node.id)}"]`)?.classList.add("active");
@@ -466,6 +471,7 @@
       }
 
       function clearSelection() {
+        selectedNodeId = null;
         document.querySelectorAll(".node").forEach(el => el.classList.remove("active"));
         document.querySelectorAll(".edge").forEach(el => el.classList.remove("active"));
         details.textContent =
@@ -544,6 +550,9 @@
         nodes = event.data.args.nodes || [];
         edges = event.data.args.edges || [];
         positions = event.data.args.positions || {};
+        if (Object.prototype.hasOwnProperty.call(event.data.args, "selected_node_id")) {
+          selectedNodeId = event.data.args.selected_node_id || null;
+        }
         render();
         showMessage(event.data.args.message || "");
         Streamlit.setFrameHeight(560);

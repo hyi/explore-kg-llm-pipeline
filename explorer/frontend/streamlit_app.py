@@ -166,6 +166,7 @@ def _render_context_subgraph(path: Path, namespace: str, details_open_key: str) 
     positions_key = f"context_positions_{namespace}_{path.id}"
     expanded_from_key = f"context_expanded_from_{namespace}_{path.id}"
     message_key = f"context_message_{namespace}_{path.id}"
+    selected_key = f"context_selected_{namespace}_{path.id}"
     st.session_state.setdefault(focus_key, path.node_element_ids)
     st.session_state.setdefault(semantic_key, {})
     st.session_state.setdefault(hidden_key, set())
@@ -218,6 +219,7 @@ def _render_context_subgraph(path: Path, namespace: str, details_open_key: str) 
         nodes=component_nodes,
         edges=component_edges,
         positions=positions,
+        selected_node_id=st.session_state.get(selected_key),
         message=st.session_state.pop(message_key, ""),
         key=f"subgraph_component_{namespace}_{path.id}",
         default=None,
@@ -236,6 +238,9 @@ def _render_context_subgraph(path: Path, namespace: str, details_open_key: str) 
 
     action = component_event.get("action")
     selected_id = component_event.get("node_id")
+    if selected_id:
+        st.session_state[selected_key] = selected_id
+
     if action == "expand_connected":
         if selected_id:
             visible_node_ids = {node["id"] for node in subgraph["nodes"]}
@@ -285,6 +290,7 @@ def _render_context_subgraph(path: Path, namespace: str, details_open_key: str) 
                 node_id for node_id in st.session_state[focus_key] if node_id != selected_id
             ]
             st.session_state[hidden_key].add(selected_id)
+            st.session_state.pop(selected_key, None)
         if selected_id:
             st.session_state[semantic_key].pop(selected_id, None)
         st.session_state[expanded_from_key] = selected_id
