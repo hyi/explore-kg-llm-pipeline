@@ -1,1 +1,1 @@
-"""Streamlit frontend for the graph exploration MVP."""
+"""Dash frontend for the graph exploration MVP."""

@@ -38,7 +38,7 @@ spec:
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: 8501
+              containerPort: 8050
               protocol: TCP
           envFrom:
             - secretRef:
@@ -49,13 +49,13 @@ spec:
           {{- end }}
           livenessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /
               port: http
             initialDelaySeconds: 30
             periodSeconds: 20
           readinessProbe:
             httpGet:
-              path: /_stcore/health
+              path: /
               port: http
             initialDelaySeconds: 10
             periodSeconds: 10

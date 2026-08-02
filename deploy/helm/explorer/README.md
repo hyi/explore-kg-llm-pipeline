@@ -1,6 +1,6 @@
 # Explorer Helm Chart
 
-Deploy the Streamlit Human-Guided Semantic Graph Explorer.
+Deploy the Dash Human-Guided Semantic Graph Explorer.
 
 ```bash
 helm install explorer deploy/helm/explorer \

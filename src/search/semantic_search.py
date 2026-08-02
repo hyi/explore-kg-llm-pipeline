@@ -34,8 +34,7 @@ def main():
     parser.add_argument(
         "--query",
         type=str,
-        # default='genes involved in chemoresistance in cancer',
-        default='drug resistance in cancer',
+        default='genes involved in drug resistance in cancer',
         required=False,
         help="query string for semantic search",
     )

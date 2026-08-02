@@ -46,6 +46,7 @@ htmlcov/
 .coverage
 .coverage.*
 .cache
+.cache/kg_explorer/
 nosetests.xml
 coverage.xml
 *.cover

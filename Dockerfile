@@ -2,10 +2,8 @@ FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    STREAMLIT_SERVER_ADDRESS=0.0.0.0 \
-    STREAMLIT_SERVER_PORT=8501 \
-    STREAMLIT_SERVER_HEADLESS=true \
-    STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
+    HOST=0.0.0.0 \
+    PORT=8050 \
     HOME=/tmp \
     PATH="/app/.venv/bin:${PATH}"
 
@@ -19,6 +17,6 @@ RUN uv sync --frozen --no-dev
 COPY explorer ./explorer
 COPY src ./src
 
-EXPOSE 8501
+EXPOSE 8050
 
-CMD ["streamlit", "run", "explorer/frontend/streamlit_app.py"]
+CMD ["gunicorn", "explorer.frontend.dash_app:server", "--bind", "0.0.0.0:8050", "--workers", "1", "--threads", "4", "--timeout", "180"]
