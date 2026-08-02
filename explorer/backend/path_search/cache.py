@@ -9,7 +9,7 @@ from typing import Any
 
 
 CACHE_VERSION = 1
-DEFAULT_CACHE_PATH = Path(".cache/kg_explorer/path_search_cache.json")
+DEFAULT_CACHE_PATH = Path("/tmp/kg_explorer/path_search_cache.json")
 
 
 class PathSearchCache:
@@ -18,13 +18,21 @@ class PathSearchCache:
         self.path = Path(configured_path) if configured_path else path or DEFAULT_CACHE_PATH
 
     def get(self, query: str, relationship_k: int) -> list[dict[str, Any]] | None:
-        cache = self._read()
+        try:
+            cache = self._read()
+        except OSError:
+            return None
         return cache.get(_cache_key(query, relationship_k))
 
     def set(self, query: str, relationship_k: int, paths: list[dict[str, Any]]) -> None:
-        cache = self._read()
-        cache[_cache_key(query, relationship_k)] = paths
-        self._write(cache)
+        try:
+            cache = self._read()
+            cache[_cache_key(query, relationship_k)] = paths
+            self._write(cache)
+        except OSError:
+            # Cache persistence is an optimization only; never fail search because
+            # the container filesystem or mounted volume is not writable.
+            return
 
     def _read(self) -> dict[str, list[dict[str, Any]]]:
         if not self.path.exists():

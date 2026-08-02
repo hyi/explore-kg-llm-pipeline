@@ -26,3 +26,11 @@ helm install explorer deploy/helm/explorer \
   --set env.existingSecret=explorer-env \
   --set env.createSecret=false
 ```
+
+Path-search cache is local to each pod and defaults to `/tmp/kg_explorer/path_search_cache.json`.
+Override it with:
+
+```bash
+helm upgrade --install explorer deploy/helm/explorer \
+  --set cache.path=/tmp/kg_explorer/path_search_cache.json
+```

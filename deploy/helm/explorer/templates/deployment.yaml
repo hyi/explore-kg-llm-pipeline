@@ -43,8 +43,10 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ include "explorer.secretName" . }}
-          {{- with .Values.extraEnv }}
           env:
+            - name: KG_EXPLORER_PATH_CACHE
+              value: {{ .Values.cache.path | quote }}
+          {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
           {{- end }}
           livenessProbe:
