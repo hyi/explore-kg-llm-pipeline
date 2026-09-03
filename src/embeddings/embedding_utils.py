@@ -2,10 +2,11 @@
 from functools import lru_cache
 
 from langchain_core.embeddings import Embeddings
-from langchain_openai import OpenAIEmbeddings
 
 from src.config import EMBEDDING_MODEL, EMBEDDING_PROVIDER
 
+DEFAULT_OPENAI_MODEL = "text-embedding-3-small"
+DEFAULT_SAPBERT_MODEL = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
 DEFAULT_OPENAI_DIMENSIONS = 1536
 DEFAULT_SAPBERT_DIMENSIONS = 768
 
@@ -15,7 +16,7 @@ class SapBERTEmbeddings(Embeddings):
 
     def __init__(
         self,
-        model_name: str = EMBEDDING_MODEL,
+        model_name: str = DEFAULT_SAPBERT_MODEL,
         device: str = "cpu",
         batch_size: int = 16,
         max_length: int = 256,
@@ -97,20 +98,24 @@ def _mean_pool(token_embeddings, attention_mask, torch):
     return summed / counts
 
 
-def get_embedding_property() -> str:
-    if EMBEDDING_PROVIDER == "sapbert":
+def _embedding_provider(model: str | None = None) -> str:
+    return (model or EMBEDDING_PROVIDER).strip().lower()
+
+
+def get_embedding_property(model: str | None = None) -> str:
+    if _embedding_provider(model) == "sapbert":
         return "sapbert_embedding"
     return "embedding"
 
 
-def get_embedding_index_suffix() -> str:
-    if EMBEDDING_PROVIDER == "sapbert":
+def get_embedding_index_suffix(model: str | None = None) -> str:
+    if _embedding_provider(model) == "sapbert":
         return "_sapbert"
     return ""
 
 
-def embedding_index_name(base_name: str) -> str:
-    suffix = get_embedding_index_suffix()
+def embedding_index_name(base_name: str, model: str | None = None) -> str:
+    suffix = get_embedding_index_suffix(model)
     if not suffix:
         return base_name
     if base_name.endswith("_vector_idx"):
@@ -120,13 +125,13 @@ def embedding_index_name(base_name: str) -> str:
     return f"{base_name}{suffix}"
 
 
-def get_embedding_dimensions(embedding_client=None) -> int:
+def get_embedding_dimensions(embedding_client=None, model: str | None = None) -> int:
     if embedding_client is not None and hasattr(
         embedding_client,
         "embedding_dimensions",
     ):
         return embedding_client.embedding_dimensions
-    if EMBEDDING_PROVIDER == "sapbert":
+    if _embedding_provider(model) == "sapbert":
         return DEFAULT_SAPBERT_DIMENSIONS
     return DEFAULT_OPENAI_DIMENSIONS
 
@@ -136,26 +141,36 @@ def cypher_escape_identifier(identifier: str) -> str:
 
 
 @lru_cache(maxsize=1)
-def get_embedding_client():
-    if EMBEDDING_PROVIDER == "sapbert":
+def get_embedding_client(model: str | None = None):
+    provider = _embedding_provider(model)
+    if provider == "sapbert":
         from src.config import SAPBERT_DEVICE
         return SapBERTEmbeddings(
-            model_name=EMBEDDING_MODEL,
+            model_name=_embedding_model(provider),
             device=SAPBERT_DEVICE,
             batch_size=16,
             max_length=256,
         )
 
-    if EMBEDDING_PROVIDER == "openai":
+    if provider == "openai":
+        from langchain_openai import OpenAIEmbeddings
         from src.config import OPENAI_API_KEY
         return OpenAIEmbeddings(
             api_key=OPENAI_API_KEY,
-            model=EMBEDDING_MODEL,
+            model=_embedding_model(provider),
         )
 
     raise ValueError(
-        f"Unsupported EMBEDDING_PROVIDER '{EMBEDDING_PROVIDER}'. Use 'openai' or 'sapbert'."
+        f"Unsupported embedding model '{provider}'. Use 'openai' or 'sapbert'."
     )
+
+
+def _embedding_model(provider: str) -> str:
+    if provider == EMBEDDING_PROVIDER:
+        return EMBEDDING_MODEL
+    if provider == "sapbert":
+        return DEFAULT_SAPBERT_MODEL
+    return DEFAULT_OPENAI_MODEL
 
 
 def print_search_result(results):

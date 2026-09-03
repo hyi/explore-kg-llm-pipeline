@@ -18,9 +18,6 @@ from src.embeddings.embedding_utils import (
     print_search_result,
 )
 
-EMBEDDING = get_embedding_client()
-EMBEDDING_PROPERTY = get_embedding_property()
-EMBEDDING_DIMENSIONS = get_embedding_dimensions(EMBEDDING)
 SEMANTIC_TEXT_CYPHER_PATH = (
     Path(__file__).resolve().parents[1]
     / "cypher"
@@ -51,11 +48,11 @@ RELATIONSHIP_TYPES = [
     "biolink:associated_with_resistance_to"
 ]
 
-def relationship_similarity_search(query, k=5):
-    rel_stores = _relationship_stores()
+def relationship_similarity_search(query, k=5, model: str | None = None):
+    rel_stores = _relationship_stores(model)
     if not rel_stores:
         _relationship_stores.cache_clear()
-        return _relationship_similarity_search_scan(query, k=k)
+        return _relationship_similarity_search_scan(query, k=k, model=model)
 
     results = []
     for rel_type, store in rel_stores.items():
@@ -73,15 +70,20 @@ def relationship_similarity_search(query, k=5):
 
 
 @lru_cache(maxsize=1)
-def _relationship_stores():
+def _relationship_stores(model: str | None = None):
     rel_stores = {}
     available_indexes = _relationship_vector_indexes_by_type()
+    embedding_client = get_embedding_client(model)
 
     for rel_type in RELATIONSHIP_TYPES:
-        for index_name in _relationship_index_candidates(rel_type, available_indexes):
+        for index_name in _relationship_index_candidates(
+            rel_type,
+            available_indexes,
+            model,
+        ):
             try:
                 rel_stores[rel_type] = Neo4jVector.from_existing_relationship_index(
-                    embedding=EMBEDDING,
+                    embedding=embedding_client,
                     url=NEO4J_URI,
                     username=NEO4J_USERNAME,
                     password=NEO4J_PASSWORD,
@@ -96,9 +98,10 @@ def _relationship_stores():
     return rel_stores
 
 
-def _relationship_similarity_search_scan(query, k=5):
-    escaped_embedding_property = cypher_escape_identifier(EMBEDDING_PROPERTY)
-    query_embedding = EMBEDDING.embed_query(query)
+def _relationship_similarity_search_scan(query, k=5, model: str | None = None):
+    embedding_property = get_embedding_property(model)
+    escaped_embedding_property = cypher_escape_identifier(embedding_property)
+    query_embedding = get_embedding_client(model).embed_query(query)
     driver = GraphDatabase.driver(
         NEO4J_URI,
         auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
@@ -121,7 +124,7 @@ def _relationship_similarity_search_scan(query, k=5):
             results = []
             for row in rows:
                 metadata = dict(row["metadata"])
-                metadata.pop(EMBEDDING_PROPERTY, None)
+                metadata.pop(embedding_property, None)
                 embedding = row["embedding"]
                 if not embedding:
                     continue
@@ -164,17 +167,21 @@ def _relationship_vector_indexes_by_type():
         driver.close()
 
 
-def _relationship_index_candidates(rel_type, available_indexes=None):
-    candidates = [_relationship_index_name(rel_type)]
+def _relationship_index_candidates(
+    rel_type,
+    available_indexes=None,
+    model: str | None = None,
+):
+    candidates = [_relationship_index_name(rel_type, model)]
 
     if (
-        not get_embedding_index_suffix()
+        not get_embedding_index_suffix(model)
         and available_indexes
         and rel_type in available_indexes
     ):
         candidates.extend(available_indexes[rel_type])
 
-    if not get_embedding_index_suffix():
+    if not get_embedding_index_suffix(model):
         candidates.extend(
             [
                 f"{rel_type.lower()}_vector_idx",
@@ -190,8 +197,8 @@ def _relationship_index_candidates(rel_type, available_indexes=None):
     return deduplicated
 
 
-def _relationship_index_name(rel_type):
-    return embedding_index_name(f"{rel_type.lower()}_vector_idx")
+def _relationship_index_name(rel_type, model: str | None = None):
+    return embedding_index_name(f"{rel_type.lower()}_vector_idx", model=model)
 
 
 def _cosine_similarity(left, right):
@@ -210,7 +217,10 @@ def create_relationship_semantic_text(session):
 
 
 def embed_relationships():
-    escaped_embedding_property = cypher_escape_identifier(EMBEDDING_PROPERTY)
+    embedding_client = get_embedding_client()
+    embedding_property = get_embedding_property()
+    embedding_dimensions = get_embedding_dimensions(embedding_client)
+    escaped_embedding_property = cypher_escape_identifier(embedding_property)
 
     driver = GraphDatabase.driver(
         NEO4J_URI,
@@ -235,7 +245,7 @@ def embed_relationships():
             rel_type = record["rel_type"]
             if rel_type not in RELATIONSHIP_TYPES:
                 continue
-            vector = EMBEDDING.embed_query(text)
+            vector = embedding_client.embed_query(text)
 
             session.run(
                 f"""
@@ -259,7 +269,7 @@ def embed_relationships():
                 ON (r.`{escaped_embedding_property}`)
                 OPTIONS {{
                   indexConfig: {{
-                    `vector.dimensions`: {EMBEDDING_DIMENSIONS},
+                    `vector.dimensions`: {embedding_dimensions},
                     `vector.similarity_function`: "cosine"
                   }}
                 }}

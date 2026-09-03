@@ -30,13 +30,13 @@ NODE_LABELS = [
     "biolink:ChemicalOrDrugOrTreatment",
 ]
 
-def node_index_name(label: str) -> str:
-    return embedding_index_name(f"{label.replace(':', '_')}_idx")
+def node_index_name(label: str, model: str | None = None) -> str:
+    return embedding_index_name(f"{label.replace(':', '_')}_idx", model=model)
 
-def ensure_node_vector_indexes():
-    embedding_client = get_embedding_client()
-    embedding_property = get_embedding_property()
-    embedding_dimensions = get_embedding_dimensions(embedding_client)
+def ensure_node_vector_indexes(model: str | None = None):
+    embedding_client = get_embedding_client(model)
+    embedding_property = get_embedding_property(model)
+    embedding_dimensions = get_embedding_dimensions(embedding_client, model)
     cypher = """
     CREATE VECTOR INDEX $index_name IF NOT EXISTS
     FOR (n:`%s`)
@@ -56,23 +56,23 @@ def ensure_node_vector_indexes():
         for label in NODE_LABELS:
             session.run(
                 cypher % (label, cypher_escape_identifier(embedding_property)),
-                index_name=node_index_name(label),
+                index_name=node_index_name(label, model),
                 dims=embedding_dimensions,
             )
 
-def get_node_stores():
+def get_node_stores(model: str | None = None):
     stores = {}
-    embedding_client = get_embedding_client()
+    embedding_client = get_embedding_client(model)
 
     try:
-        ensure_node_vector_indexes()
+        ensure_node_vector_indexes(model)
         for label in NODE_LABELS:
             stores[label] = Neo4jVector.from_existing_index(
                 embedding=embedding_client,
                 url=NEO4J_URI,
                 username=NEO4J_USERNAME,
                 password=NEO4J_PASSWORD,
-                index_name=node_index_name(label),
+                index_name=node_index_name(label, model),
                 text_node_property="node_text"
             )
     except Exception:
@@ -85,12 +85,14 @@ def node_similarity_search(
     query: str,
     k_per_index: int = 2,
     max_total: int = 8,
+    model: str | None = None,
 ):
     if not node_stores:
         return _node_similarity_search_scan(
             query,
             k_per_index=k_per_index,
             max_total=max_total,
+            model=model,
         )
 
     results = []
@@ -117,10 +119,11 @@ def _node_similarity_search_scan(
     query: str,
     k_per_index: int = 2,
     max_total: int = 8,
+    model: str | None = None,
 ):
-    embedding_property = get_embedding_property()
+    embedding_property = get_embedding_property(model)
     escaped_embedding_property = cypher_escape_identifier(embedding_property)
-    query_embedding = get_embedding_client().embed_query(query)
+    query_embedding = get_embedding_client(model).embed_query(query)
     driver = GraphDatabase.driver(
         NEO4J_URI,
         auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
