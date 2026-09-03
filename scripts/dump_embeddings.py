@@ -2,7 +2,7 @@ import argparse
 import json
 from neo4j import GraphDatabase
 from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
-
+from src.embeddings.embedding_utils import cypher_escape_identifier
 
 driver = GraphDatabase.driver(
     NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)
@@ -27,10 +27,6 @@ EMBEDDING_CONFIGS = {
 
 def embedding_config(model: str):
     return EMBEDDING_CONFIGS[model]
-
-
-def cypher_escape_identifier(identifier: str) -> str:
-    return identifier.replace("`", "``")
 
 
 def dump_nodes(path=None, model="openai"):
