@@ -4,7 +4,17 @@ import traceback
 from copy import deepcopy
 from typing import Any
 
-from dash import ALL, ClientsideFunction, Dash, Input, Output, State, ctx, html, no_update
+from dash import (
+    ALL,
+    ClientsideFunction,
+    Dash,
+    Input,
+    Output,
+    State,
+    ctx,
+    html,
+    no_update,
+)
 from dash.exceptions import PreventUpdate
 
 from explorer.backend.graph_adapter.neo4j import Neo4jGraphAdapter

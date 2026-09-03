@@ -1,5 +1,6 @@
-import pandas as pd
 from pathlib import Path
+
+import pandas as pd
 
 
 class EvidenceGraph:
@@ -47,7 +48,7 @@ class EvidenceGraph:
         Path(out_file).parent.mkdir(parents=True, exist_ok=True)
 
         with open(out_file, "w") as f:
-            f.write(f"<h1>Semantic Search Results</h1>")
+            f.write("<h1>Semantic Search Results</h1>")
             f.write(f"<h3>Query</h3><p>{self.query}</p>")
             if self.relationships:
                 f.write("<h2>Relationship Evidence</h2>")
@@ -68,9 +69,8 @@ class EvidenceGraph:
                     nodes.add((subj, m.get("llm_subject")))
                 if obj:
                     nodes.add((obj, m.get("llm_object")))
-            for node_id, node_name in sorted(nodes):
-                f.write(f"MERGE (e:Entity {{id: '{node_id}'}})"
-                        f"SET e.name = '{node_name}';\n")
+            f.writelines(f"MERGE (e:Entity {{id: '{node_id}'}})"
+                        f"SET e.name = '{node_name}';\n" for node_id, node_name in sorted(nodes))
 
             for r in self.relationships:
                 m = r.metadata

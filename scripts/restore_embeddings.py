@@ -3,9 +3,9 @@ import json
 from pathlib import Path
 
 from neo4j import GraphDatabase
-from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
-from src.embeddings.embedding_utils import cypher_escape_identifier
 
+from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
+from src.embeddings.embedding_utils import cypher_escape_identifier
 
 driver = GraphDatabase.driver(
     NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)

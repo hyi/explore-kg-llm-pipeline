@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from explorer.backend.path_search.cache import DEFAULT_CACHE_PATH, PathSearchCache, normalized_query
+from explorer.backend.path_search.cache import (
+    DEFAULT_CACHE_PATH,
+    PathSearchCache,
+    normalized_query,
+)
 from explorer.backend.path_search.service import PathSearchService
 
 

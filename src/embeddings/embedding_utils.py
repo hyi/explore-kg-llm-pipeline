@@ -1,11 +1,10 @@
 # src/explore_kg_llm/embeddings/embedding_utils.py
 from functools import lru_cache
-from typing import Optional
 
 from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
 
-from src.config import EMBEDDING_PROVIDER, EMBEDDING_MODEL
+from src.config import EMBEDDING_MODEL, EMBEDDING_PROVIDER
 
 DEFAULT_OPENAI_DIMENSIONS = 1536
 DEFAULT_SAPBERT_DIMENSIONS = 768
@@ -20,7 +19,7 @@ class SapBERTEmbeddings(Embeddings):
         device: str = "cpu",
         batch_size: int = 16,
         max_length: int = 256,
-        pooling: Optional[str] = None,
+        pooling: str | None = None,
     ):
         self.model_name = model_name
         self.device = device

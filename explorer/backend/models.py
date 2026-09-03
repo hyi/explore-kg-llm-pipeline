@@ -115,7 +115,8 @@ class SemanticSearchResult:
 
 def _jsonable(value: Any) -> Any:
     if isinstance(value, dict):
-        return {str(key): _jsonable(item) for key, item in value.items() if key != "embedding"}
+        return {str(key): _jsonable(item) for key, item in value.items() \
+                if key != "embedding" and key != "sapbert_embedding"}
     if isinstance(value, list):
         return [_jsonable(item) for item in value]
     if isinstance(value, tuple):

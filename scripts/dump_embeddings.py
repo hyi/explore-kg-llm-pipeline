@@ -1,7 +1,9 @@
 import argparse
 import json
+
 from neo4j import GraphDatabase
-from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+
+from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 from src.embeddings.embedding_utils import cypher_escape_identifier
 
 driver = GraphDatabase.driver(
@@ -45,8 +47,7 @@ def dump_nodes(path=None, model="openai"):
       n.`{embedding_property}` AS {embedding_key}
     """
     with driver.session() as session, open(path, "w") as f:
-        for r in session.run(query):
-            f.write(json.dumps(r.data()) + "\n")
+        f.writelines(json.dumps(r.data()) + "\n" for r in session.run(query))
 
 
 def dump_relationships(path=None, model="openai"):
@@ -66,8 +67,7 @@ def dump_relationships(path=None, model="openai"):
       r.`{embedding_property}` AS {embedding_key}
     """
     with driver.session() as session, open(path, "w") as f:
-        for r in session.run(query):
-            f.write(json.dumps(r.data()) + "\n")
+        f.writelines(json.dumps(r.data()) + "\n" for r in session.run(query))
 
 
 def parse_args():

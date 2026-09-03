@@ -4,8 +4,8 @@ from typing import Any
 
 from neo4j import GraphDatabase
 
-from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 from explorer.backend.models import Edge, Node, Path
+from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 
 
 class Neo4jGraphAdapter:

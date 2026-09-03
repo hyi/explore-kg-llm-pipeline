@@ -2,8 +2,11 @@
 import math
 from pathlib import Path
 
-from langchain_core.documents import Document
 from langchain_community.vectorstores import Neo4jVector
+from langchain_core.documents import Document
+from neo4j import GraphDatabase
+
+from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 from src.embeddings.embedding_utils import (
     cypher_escape_identifier,
     embedding_index_name,
@@ -11,9 +14,6 @@ from src.embeddings.embedding_utils import (
     get_embedding_dimensions,
     get_embedding_property,
 )
-from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
-from neo4j import GraphDatabase
-
 
 NODE_TEXT_CYPHER_PATH = (
     Path(__file__).resolve().parents[1]

@@ -3,9 +3,11 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from langchain_core.documents import Document
 from langchain_community.vectorstores import Neo4jVector
+from langchain_core.documents import Document
 from neo4j import GraphDatabase
+
+from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 from src.embeddings.embedding_utils import (
     cypher_escape_identifier,
     embedding_index_name,
@@ -15,8 +17,6 @@ from src.embeddings.embedding_utils import (
     get_embedding_property,
     print_search_result,
 )
-from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
-
 
 EMBEDDING = get_embedding_client()
 EMBEDDING_PROPERTY = get_embedding_property()

@@ -7,7 +7,6 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-
 CACHE_VERSION = 1
 DEFAULT_CACHE_PATH = Path("/tmp/kg_explorer/path_search_cache.json")
 

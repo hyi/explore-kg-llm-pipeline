@@ -1,6 +1,6 @@
 import argparse
-from src.embeddings.embed_relationships import relationship_similarity_search
-from src.embeddings.embedding_utils import extract_entities_from_relationships
+import sys
+
 from src.embeddings.embed_nodes import get_node_stores, node_similarity_search
 from src.search.evidence_graph import EvidenceGraph
 
@@ -29,4 +29,4 @@ def main():
 if __name__ == "__main__":
     main()
     print('done')
-    exit()
+    sys.exit()
