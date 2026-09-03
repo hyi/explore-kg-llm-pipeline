@@ -4,6 +4,7 @@ from pathlib import Path
 
 from neo4j import GraphDatabase
 from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
+from src.embeddings.embedding_utils import cypher_escape_identifier
 
 
 driver = GraphDatabase.driver(
@@ -66,10 +67,6 @@ RELATIONSHIP_TYPES = [
 
 def embedding_config(model: str):
     return EMBEDDING_CONFIGS[model]
-
-
-def cypher_escape_identifier(identifier: str) -> str:
-    return identifier.replace("`", "``")
 
 
 def restore_nodes(path=None, model="openai"):
