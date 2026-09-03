@@ -1,3 +1,4 @@
+import argparse
 import json
 from pathlib import Path
 
@@ -11,7 +12,25 @@ driver = GraphDatabase.driver(
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DATA_DIR = SCRIPT_DIR / "data"
-EMBEDDING_DIMS = 1536
+
+EMBEDDING_CONFIGS = {
+    "openai": {
+        "dimensions": 1536,
+        "embedding_key": "embedding",
+        "embedding_property": "embedding",
+        "index_suffix": "",
+        "node_path": DATA_DIR / "node_embeddings.jsonl",
+        "relationship_path": DATA_DIR / "relationship_embeddings.jsonl",
+    },
+    "sapbert": {
+        "dimensions": 768,
+        "embedding_key": "sapbert_embedding",
+        "embedding_property": "sapbert_embedding",
+        "index_suffix": "_sapbert",
+        "node_path": DATA_DIR / "sapbert_node_embeddings.jsonl",
+        "relationship_path": DATA_DIR / "sapbert_relationship_embeddings.jsonl",
+    },
+}
 
 NODE_LABELS = [
     "biolink:Disease",
@@ -45,40 +64,68 @@ RELATIONSHIP_TYPES = [
 ]
 
 
-def restore_nodes(path=DATA_DIR / "node_embeddings.jsonl"):
-    query = """
-    MATCH (n {id: $node_id})
-    SET n.embedding = $embedding,
+def embedding_config(model: str):
+    return EMBEDDING_CONFIGS[model]
+
+
+def cypher_escape_identifier(identifier: str) -> str:
+    return identifier.replace("`", "``")
+
+
+def restore_nodes(path=None, model="openai"):
+    config = embedding_config(model)
+    path = path or config["node_path"]
+    embedding_key = config["embedding_key"]
+    embedding_property = cypher_escape_identifier(config["embedding_property"])
+    query = f"""
+    MATCH (n {{id: $node_id}})
+    SET n.`{embedding_property}` = $embedding,
         n.node_text = $node_text
     """
     with driver.session() as session, open(path) as f:
         for line in f:
             row = json.loads(line)
-            session.run(query, **row)
+            session.run(
+                query,
+                node_id=row["node_id"],
+                embedding=row[embedding_key],
+                node_text=row.get("node_text"),
+            )
 
 
-def restore_relationships(path=DATA_DIR / "relationship_embeddings.jsonl"):
-    query = """
+def restore_relationships(path=None, model="openai"):
+    config = embedding_config(model)
+    path = path or config["relationship_path"]
+    embedding_key = config["embedding_key"]
+    embedding_property = cypher_escape_identifier(config["embedding_property"])
+    query = f"""
     MATCH ()-[r]-()
     WHERE r.id = $rel_id
     SET
-      r.embedding = $embedding,
+      r.`{embedding_property}` = $embedding,
       r.semantic_text = $semantic_text
     """
     with driver.session() as session, open(path) as f:
         for line in f:
             row = json.loads(line)
-            session.run(query, **row)
+            session.run(
+                query,
+                rel_id=row["rel_id"],
+                embedding=row[embedding_key],
+                semantic_text=row.get("semantic_text"),
+            )
 
 
-def create_vector_indexes():
+def create_vector_indexes(model="openai"):
+    config = embedding_config(model)
+    embedding_property = cypher_escape_identifier(config["embedding_property"])
     with driver.session() as session:
         for label in NODE_LABELS:
             session.run(
                 f"""
-                CREATE VECTOR INDEX `{node_index_name(label)}` IF NOT EXISTS
+                CREATE VECTOR INDEX `{node_index_name(label, model)}` IF NOT EXISTS
                 FOR (n:`{label}`)
-                ON (n.embedding)
+                ON (n.`{embedding_property}`)
                 OPTIONS {{
                   indexConfig: {{
                     `vector.dimensions`: $dims,
@@ -86,15 +133,15 @@ def create_vector_indexes():
                   }}
                 }}
                 """,
-                dims=EMBEDDING_DIMS,
+                dims=config["dimensions"],
             )
 
         for rel_type in RELATIONSHIP_TYPES:
             session.run(
                 f"""
-                CREATE VECTOR INDEX `{relationship_index_name(rel_type)}` IF NOT EXISTS
+                CREATE VECTOR INDEX `{relationship_index_name(rel_type, model)}` IF NOT EXISTS
                 FOR ()-[r:`{rel_type}`]-()
-                ON (r.embedding)
+                ON (r.`{embedding_property}`)
                 OPTIONS {{
                   indexConfig: {{
                     `vector.dimensions`: $dims,
@@ -102,23 +149,39 @@ def create_vector_indexes():
                   }}
                 }}
                 """,
-                dims=EMBEDDING_DIMS,
+                dims=config["dimensions"],
             )
 
         session.run("CALL db.awaitIndexes($timeout_seconds)", timeout_seconds=300)
 
 
-def node_index_name(label: str) -> str:
-    return f"{label.replace(':', '_')}_idx"
+def node_index_name(label: str, model="openai") -> str:
+    config = embedding_config(model)
+    return f"{label.replace(':', '_')}{config['index_suffix']}_idx"
 
 
-def relationship_index_name(rel_type: str) -> str:
+def relationship_index_name(rel_type: str, model="openai") -> str:
+    config = embedding_config(model)
+    if model == "sapbert":
+        return f"{rel_type.lower()}{config['index_suffix']}_vector_idx"
     return f"{rel_type.replace(':', '_').lower()}_vector_idx"
 
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--model",
+        choices=sorted(EMBEDDING_CONFIGS),
+        default="openai",
+        help="Embedding model property set to restore.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    restore_nodes()
-    restore_relationships()
-    create_vector_indexes()
+    args = parse_args()
+    restore_nodes(model=args.model)
+    restore_relationships(model=args.model)
+    create_vector_indexes(model=args.model)
     driver.close()
-    print("Embeddings restored and vector indexes created successfully")
+    print(f"{args.model} embeddings restored and vector indexes created successfully")

@@ -1,15 +1,31 @@
 # src/explore_kg_llm/embeddings/embed_relationships.py
 import math
 from functools import lru_cache
+from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Neo4jVector
 from neo4j import GraphDatabase
-from src.embeddings.embedding_utils import get_embedding_client, print_search_result
+from src.embeddings.embedding_utils import (
+    cypher_escape_identifier,
+    embedding_index_name,
+    get_embedding_client,
+    get_embedding_dimensions,
+    get_embedding_index_suffix,
+    get_embedding_property,
+    print_search_result,
+)
 from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 
 
 EMBEDDING = get_embedding_client()
+EMBEDDING_PROPERTY = get_embedding_property()
+EMBEDDING_DIMENSIONS = get_embedding_dimensions(EMBEDDING)
+SEMANTIC_TEXT_CYPHER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "cypher"
+    / "create_semantic_text.cypher"
+)
 
 RELATIONSHIP_TYPES = [
     "biolink:related_to",
@@ -81,6 +97,7 @@ def _relationship_stores():
 
 
 def _relationship_similarity_search_scan(query, k=5):
+    escaped_embedding_property = cypher_escape_identifier(EMBEDDING_PROPERTY)
     query_embedding = EMBEDDING.embed_query(query)
     driver = GraphDatabase.driver(
         NEO4J_URI,
@@ -89,19 +106,23 @@ def _relationship_similarity_search_scan(query, k=5):
     try:
         with driver.session() as session:
             rows = session.run(
-                """
+                f"""
                 MATCH ()-[r]->()
                 WHERE type(r) IN $relationship_types
-                  AND r.embedding IS NOT NULL
+                  AND r.`{escaped_embedding_property}` IS NOT NULL
                   AND r.semantic_text IS NOT NULL
-                RETURN type(r) AS predicate, r { .* } AS metadata, r.semantic_text AS text
+                RETURN type(r) AS predicate,
+                       r {{ .* }} AS metadata,
+                       r.semantic_text AS text,
+                       r.`{escaped_embedding_property}` AS embedding
                 """,
                 relationship_types=RELATIONSHIP_TYPES,
             )
             results = []
             for row in rows:
                 metadata = dict(row["metadata"])
-                embedding = metadata.pop("embedding", None)
+                metadata.pop(EMBEDDING_PROPERTY, None)
+                embedding = row["embedding"]
                 if not embedding:
                     continue
                 metadata["predicate"] = row["predicate"]
@@ -144,23 +165,33 @@ def _relationship_vector_indexes_by_type():
 
 
 def _relationship_index_candidates(rel_type, available_indexes=None):
-    candidates = []
-    if available_indexes and rel_type in available_indexes:
+    candidates = [_relationship_index_name(rel_type)]
+
+    if (
+        not get_embedding_index_suffix()
+        and available_indexes
+        and rel_type in available_indexes
+    ):
         candidates.extend(available_indexes[rel_type])
 
-    candidates.extend(
-        [
-            f"{rel_type.lower()}_vector_idx",
-            f"{rel_type.replace(':', '_').lower()}_vector_idx",
-            f"{rel_type.replace(':', '_')}_vector_idx",
-        ]
-    )
+    if not get_embedding_index_suffix():
+        candidates.extend(
+            [
+                f"{rel_type.lower()}_vector_idx",
+                f"{rel_type.replace(':', '_').lower()}_vector_idx",
+                f"{rel_type.replace(':', '_')}_vector_idx",
+            ]
+        )
 
     deduplicated = []
     for index_name in candidates:
         if index_name not in deduplicated:
             deduplicated.append(index_name)
     return deduplicated
+
+
+def _relationship_index_name(rel_type):
+    return embedding_index_name(f"{rel_type.lower()}_vector_idx")
 
 
 def _cosine_similarity(left, right):
@@ -172,7 +203,14 @@ def _cosine_similarity(left, right):
     return numerator / (left_norm * right_norm)
 
 
+def create_relationship_semantic_text(session):
+    query = SEMANTIC_TEXT_CYPHER_PATH.read_text().strip().removesuffix(";")
+    session.run(query).consume()
+    print("Relationship semantic_text created")
+
+
 def embed_relationships():
+    escaped_embedding_property = cypher_escape_identifier(EMBEDDING_PROPERTY)
 
     driver = GraphDatabase.driver(
         NEO4J_URI,
@@ -180,11 +218,13 @@ def embed_relationships():
     )
 
     with driver.session() as session:
+        create_relationship_semantic_text(session)
+
         results = session.run(
-            """
+            f"""
             MATCH ()-[r]->()
             WHERE r.semantic_text IS NOT NULL
-              AND r.embedding IS NULL
+              AND r.`{escaped_embedding_property}` IS NULL
             RETURN elementId(r) AS rid, 
             type(r) as rel_type, r.semantic_text AS text
             """
@@ -198,10 +238,10 @@ def embed_relationships():
             vector = EMBEDDING.embed_query(text)
 
             session.run(
-                """
+                f"""
                 MATCH ()-[r]->() 
                 WHERE elementId(r) = $rid
-                SET r.embedding = $embedding
+                SET r.`{escaped_embedding_property}` = $embedding
                 """,
                 rid=rid,
                 embedding=vector,
@@ -210,15 +250,16 @@ def embed_relationships():
         rel_index_list = []
         for rel_type in RELATIONSHIP_TYPES:
             # create relationship vector index
-            index_name = f"{rel_type.lower()}_vector_idx"
+            index_name = _relationship_index_name(rel_type)
+            escaped_index_name = cypher_escape_identifier(index_name)
             session.run(
                 f"""
-                CREATE VECTOR INDEX `{index_name}` IF NOT EXISTS 
+                CREATE VECTOR INDEX `{escaped_index_name}` IF NOT EXISTS 
                 FOR ()-[r:`{rel_type}`]-()
-                ON (r.embedding)
+                ON (r.`{escaped_embedding_property}`)
                 OPTIONS {{
                   indexConfig: {{
-                    `vector.dimensions`: 1536,
+                    `vector.dimensions`: {EMBEDDING_DIMENSIONS},
                     `vector.similarity_function`: "cosine"
                   }}
                 }}

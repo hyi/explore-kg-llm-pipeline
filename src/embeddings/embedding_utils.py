@@ -1,12 +1,161 @@
 # src/explore_kg_llm/embeddings/embedding_utils.py
+from functools import lru_cache
+from typing import Optional
+
+from langchain_core.embeddings import Embeddings
 from langchain_openai import OpenAIEmbeddings
-from src.config import OPENAI_API_KEY, EMBEDDING_MODEL
+
+from src.config import EMBEDDING_PROVIDER, EMBEDDING_MODEL
+
+DEFAULT_OPENAI_DIMENSIONS = 1536
+DEFAULT_SAPBERT_DIMENSIONS = 768
 
 
+class SapBERTEmbeddings(Embeddings):
+    """LangChain-compatible local SapBERT embedding client."""
+
+    def __init__(
+        self,
+        model_name: str = EMBEDDING_MODEL,
+        device: str = "cpu",
+        batch_size: int = 16,
+        max_length: int = 256,
+        pooling: Optional[str] = None,
+    ):
+        self.model_name = model_name
+        self.device = device
+        self.batch_size = batch_size
+        self.max_length = max_length
+        self.pooling = pooling or (
+            "mean" if model_name.endswith("-mean-token") else "cls"
+        )
+        self._tokenizer = None
+        self._model = None
+
+    @property
+    def embedding_dimensions(self) -> int:
+        if self._model is not None:
+            return int(self._model.config.hidden_size)
+        return int(DEFAULT_SAPBERT_DIMENSIONS)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        tokenizer, model, torch = self._load_model()
+        embeddings = []
+
+        for start in range(0, len(texts), self.batch_size):
+            batch = [text or "" for text in texts[start:start + self.batch_size]]
+            tokens = tokenizer(
+                batch,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors="pt",
+            )
+            tokens = {key: value.to(self.device) for key, value in tokens.items()}
+
+            with torch.no_grad():
+                output = model(**tokens)
+                if self.pooling == "mean":
+                    vectors = _mean_pool(
+                        output.last_hidden_state,
+                        tokens["attention_mask"],
+                        torch,
+                    )
+                else:
+                    vectors = output.last_hidden_state[:, 0, :]
+
+            embeddings.extend(vectors.cpu().tolist())
+        return embeddings
+
+    def embed_query(self, text: str) -> list[float]:
+        return self.embed_documents([text])[0]
+
+    def _load_model(self):
+        if self._tokenizer is None or self._model is None:
+            try:
+                import torch
+                from transformers import AutoModel, AutoTokenizer
+            except ImportError as exc:
+                raise ImportError(
+                    "SapBERT embeddings require the 'torch' and 'transformers' "
+                    "packages to be installed."
+                ) from exc
+
+            self._tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+            self._model = AutoModel.from_pretrained(self.model_name)
+            self._model.to(self.device)
+            self._model.eval()
+        else:
+            import torch
+
+        return self._tokenizer, self._model, torch
+
+
+def _mean_pool(token_embeddings, attention_mask, torch):
+    input_mask = attention_mask.unsqueeze(-1).expand(token_embeddings.size()).float()
+    summed = torch.sum(token_embeddings * input_mask, 1)
+    counts = torch.clamp(input_mask.sum(1), min=1e-9)
+    return summed / counts
+
+
+def get_embedding_property() -> str:
+    if EMBEDDING_PROVIDER == "sapbert":
+        return "sapbert_embedding"
+    return "embedding"
+
+
+def get_embedding_index_suffix() -> str:
+    if EMBEDDING_PROVIDER == "sapbert":
+        return "_sapbert"
+    return ""
+
+
+def embedding_index_name(base_name: str) -> str:
+    suffix = get_embedding_index_suffix()
+    if not suffix:
+        return base_name
+    if base_name.endswith("_vector_idx"):
+        return f"{base_name[:-len('_vector_idx')]}{suffix}_vector_idx"
+    if base_name.endswith("_idx"):
+        return f"{base_name[:-len('_idx')]}{suffix}_idx"
+    return f"{base_name}{suffix}"
+
+
+def get_embedding_dimensions(embedding_client=None) -> int:
+    if embedding_client is not None and hasattr(
+        embedding_client,
+        "embedding_dimensions",
+    ):
+        return embedding_client.embedding_dimensions
+    if EMBEDDING_PROVIDER == "sapbert":
+        return DEFAULT_SAPBERT_DIMENSIONS
+    return DEFAULT_OPENAI_DIMENSIONS
+
+
+def cypher_escape_identifier(identifier: str) -> str:
+    return identifier.replace("`", "``")
+
+
+@lru_cache(maxsize=1)
 def get_embedding_client():
-    return OpenAIEmbeddings(
-        api_key=OPENAI_API_KEY,
-        model=EMBEDDING_MODEL,
+    if EMBEDDING_PROVIDER == "sapbert":
+        from src.config import SAPBERT_DEVICE
+        return SapBERTEmbeddings(
+            model_name=EMBEDDING_MODEL,
+            device=SAPBERT_DEVICE,
+            batch_size=16,
+            max_length=256,
+        )
+
+    if EMBEDDING_PROVIDER == "openai":
+        from src.config import OPENAI_API_KEY
+        return OpenAIEmbeddings(
+            api_key=OPENAI_API_KEY,
+            model=EMBEDDING_MODEL,
+        )
+
+    raise ValueError(
+        f"Unsupported EMBEDDING_PROVIDER '{EMBEDDING_PROVIDER}'. Use 'openai' or 'sapbert'."
     )
 
 

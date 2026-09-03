@@ -1,12 +1,25 @@
 # src/explore_kg_llm/embeddings/embed_nodes.py
 import math
+from pathlib import Path
 
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Neo4jVector
-from src.embeddings.embedding_utils import get_embedding_client
+from src.embeddings.embedding_utils import (
+    cypher_escape_identifier,
+    embedding_index_name,
+    get_embedding_client,
+    get_embedding_dimensions,
+    get_embedding_property,
+)
 from src.config import NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD
 from neo4j import GraphDatabase
 
+
+NODE_TEXT_CYPHER_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "cypher"
+    / "create_node_text.cypher"
+)
 
 NODE_LABELS = [
     "biolink:Disease",
@@ -18,13 +31,16 @@ NODE_LABELS = [
 ]
 
 def node_index_name(label: str) -> str:
-    return f"{label.replace(':', '_')}_idx"
+    return embedding_index_name(f"{label.replace(':', '_')}_idx")
 
 def ensure_node_vector_indexes():
+    embedding_client = get_embedding_client()
+    embedding_property = get_embedding_property()
+    embedding_dimensions = get_embedding_dimensions(embedding_client)
     cypher = """
     CREATE VECTOR INDEX $index_name IF NOT EXISTS
     FOR (n:`%s`)
-    ON (n.%s)
+    ON (n.`%s`)
     OPTIONS {
       indexConfig: {
         `vector.dimensions`: $dims,
@@ -39,19 +55,20 @@ def ensure_node_vector_indexes():
     with driver.session() as session:
         for label in NODE_LABELS:
             session.run(
-                cypher % (label, 'embedding'),
+                cypher % (label, cypher_escape_identifier(embedding_property)),
                 index_name=node_index_name(label),
-                dims=1536,
+                dims=embedding_dimensions,
             )
 
 def get_node_stores():
     stores = {}
+    embedding_client = get_embedding_client()
 
     try:
         ensure_node_vector_indexes()
         for label in NODE_LABELS:
             stores[label] = Neo4jVector.from_existing_index(
-                embedding=get_embedding_client(),
+                embedding=embedding_client,
                 url=NEO4J_URI,
                 username=NEO4J_USERNAME,
                 password=NEO4J_PASSWORD,
@@ -101,6 +118,8 @@ def _node_similarity_search_scan(
     k_per_index: int = 2,
     max_total: int = 8,
 ):
+    embedding_property = get_embedding_property()
+    escaped_embedding_property = cypher_escape_identifier(embedding_property)
     query_embedding = get_embedding_client().embed_query(query)
     driver = GraphDatabase.driver(
         NEO4J_URI,
@@ -109,12 +128,15 @@ def _node_similarity_search_scan(
     try:
         with driver.session() as session:
             rows = session.run(
-                """
+                f"""
                 MATCH (n)
                 WHERE any(label IN labels(n) WHERE label IN $node_labels)
-                  AND n.embedding IS NOT NULL
+                  AND n.`{escaped_embedding_property}` IS NOT NULL
                   AND n.node_text IS NOT NULL
-                RETURN labels(n) AS labels, n { .* } AS metadata, n.node_text AS text
+                RETURN labels(n) AS labels,
+                       n {{ .* }} AS metadata,
+                       n.node_text AS text,
+                       n.`{escaped_embedding_property}` AS embedding
                 """,
                 node_labels=NODE_LABELS,
             )
@@ -128,7 +150,8 @@ def _node_similarity_search_scan(
                     continue
 
                 metadata = dict(row["metadata"])
-                embedding = metadata.pop("embedding", None)
+                metadata.pop(embedding_property, None)
+                embedding = row["embedding"]
                 name = metadata.get("name") or metadata.get("id")
                 if not embedding or name in names_in_results:
                     continue
@@ -157,17 +180,35 @@ def _cosine_similarity(left, right):
     return numerator / (left_norm * right_norm)
 
 
+def create_node_text():
+    query = NODE_TEXT_CYPHER_PATH.read_text().strip().removesuffix(";")
+
+    driver = GraphDatabase.driver(
+        NEO4J_URI,
+        auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
+    )
+    with driver.session() as session:
+        session.run(query).consume()
+    
+    print("Node node_text created")
+
+
 def embed_nodes():
+    embedding_client = get_embedding_client()
+    embedding_property = get_embedding_property()
+
+    create_node_text()
+    
     for label in NODE_LABELS:
         Neo4jVector.from_existing_graph(
-            embedding=get_embedding_client(),
+            embedding=embedding_client,
             url=NEO4J_URI,
             username=NEO4J_USERNAME,
             password=NEO4J_PASSWORD,
-            index_name=f"{label.replace(':','_')}_idx",
+            index_name=node_index_name(label),
             node_label=label,
             text_node_properties=["name", "description"],
-            embedding_node_property="embedding",
+            embedding_node_property=embedding_property,
         )
 
         print(f"Embedded nodes for {label}")
