@@ -12,6 +12,7 @@ __pycache__/
 build/
 scripts/data/
 src/search/results/
+sapbert_model/
 develop-eggs/
 dist/
 downloads/
@@ -214,3 +215,4 @@ __marimo__/
 # Agents
 .agents
 .codex
+
