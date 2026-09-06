@@ -10,7 +10,7 @@ from explorer.backend.path_search.cache import (
     _cache_key,
     normalized_query,
 )
-from explorer.backend.path_search.service import PathSearchService
+from explorer.backend.path_search.service import PathSearchService, _embedding_cache_identity
 from explorer.backend.semantic_search.ranking import AnchorRankingConfig
 
 
@@ -91,6 +91,38 @@ def test_path_search_cache_options_include_embedding_identity(tmp_path) -> None:
     assert options["embedding_provider"]
     assert options["embedding_model"]
     assert options["embedding_property"] in {"embedding", "sapbert_embedding"}
+
+
+def test_embedding_cache_identity_prefers_current_dotenv_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("EMBEDDING_PROVIDER", "openai")
+    monkeypatch.setenv("EMBEDDING_MODEL", "text-embedding-3-small")
+    (tmp_path / ".env").write_text("EMBEDDING_PROVIDER=sapbert\nEMBEDDING_MODEL=local-sapbert\n", encoding="utf-8")
+
+    assert _embedding_cache_identity() == {
+        "embedding_provider": "sapbert",
+        "embedding_model": "local-sapbert",
+        "embedding_property": "sapbert_embedding",
+    }
+
+
+def test_cache_key_differs_by_embedding_provider(tmp_path) -> None:
+    cache = PathSearchCache(tmp_path / "path_search_cache.json")
+    openai_options = {
+        "embedding_provider": "openai",
+        "embedding_model": "text-embedding-3-small",
+        "embedding_property": "embedding",
+    }
+    sapbert_options = {
+        "embedding_provider": "sapbert",
+        "embedding_model": "local-sapbert",
+        "embedding_property": "sapbert_embedding",
+    }
+
+    openai_key = cache.key_for("genes involved in chemoresistance", 5, options=openai_options)
+    sapbert_key = cache.key_for("genes involved in chemoresistance", 5, options=sapbert_options)
+
+    assert openai_key != sapbert_key
 
 
 def test_path_search_service_returns_cache_hit_without_live_search(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

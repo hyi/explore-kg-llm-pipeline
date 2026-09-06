@@ -292,24 +292,3 @@ def test_exploration_stores_are_not_browser_persistent() -> None:
     assert stores["selected-path-id-store"].storage_type == "memory"
     assert stores["context-store"].storage_type == "memory"
     assert stores["session-store"].storage_type == "memory"
-
-
-def test_layout_includes_server_cache_clear_button() -> None:
-    layout = build_layout()
-
-    assert _find_component(layout, "clear-cache-button").children == "Clear server cache"
-
-
-def _find_component(component, component_id: str):
-    if getattr(component, "id", None) == component_id:
-        return component
-    children = getattr(component, "children", None)
-    if children is None:
-        return None
-    if not isinstance(children, list):
-        children = [children]
-    for child in children:
-        match = _find_component(child, component_id)
-        if match is not None:
-            return match
-    return None

@@ -15,6 +15,14 @@ class PathSearchCache:
         configured_path = os.getenv("KG_EXPLORER_PATH_CACHE")
         self.path = Path(configured_path) if configured_path else path or DEFAULT_CACHE_PATH
 
+    def key_for(
+        self,
+        query: str,
+        relationship_k: int,
+        options: dict[str, Any] | None = None,
+    ) -> str:
+        return _cache_key(query, relationship_k, options=options)
+
     def get(
         self,
         query: str,

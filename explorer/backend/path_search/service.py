@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from typing import Any
+
+from dotenv import dotenv_values
 
 from explorer.backend.graph_adapter.neo4j import Neo4jGraphAdapter
 from explorer.backend.path_discovery import PathDiscoveryService
@@ -11,8 +14,7 @@ from explorer.backend.semantic_search.ranking import (
     ANCHOR_RANKING_STRATEGY,
     AnchorRankingConfig,
 )
-from src.config import EMBEDDING_MODEL, EMBEDDING_PROVIDER
-from src.embeddings.embedding_utils import get_embedding_property
+from src.embeddings.embedding_utils import DEFAULT_OPENAI_MODEL, DEFAULT_SAPBERT_MODEL
 
 
 @dataclass(frozen=True)
@@ -71,10 +73,27 @@ class PathSearchService:
     def _cache_options(self, semantic_fetch_k: int, paths_per_hit: int) -> dict[str, Any]:
         return {
             "ranking_strategy": ANCHOR_RANKING_STRATEGY,
-            "embedding_provider": EMBEDDING_PROVIDER,
-            "embedding_model": EMBEDDING_MODEL,
-            "embedding_property": get_embedding_property(),
+            **_embedding_cache_identity(),
             "semantic_fetch_k": int(semantic_fetch_k),
             "paths_per_hit": int(paths_per_hit),
             "anchor_ranking": self.anchor_ranking_config.to_cache_dict(),
         }
+
+
+def _embedding_cache_identity() -> dict[str, str]:
+    env_file = dotenv_values(".env")
+    provider = str(
+        env_file.get("EMBEDDING_PROVIDER")
+        or os.getenv("EMBEDDING_PROVIDER")
+        or "openai"
+    ).strip().lower()
+    model = str(
+        env_file.get("EMBEDDING_MODEL")
+        or os.getenv("EMBEDDING_MODEL")
+        or (DEFAULT_SAPBERT_MODEL if provider == "sapbert" else DEFAULT_OPENAI_MODEL)
+    ).strip()
+    return {
+        "embedding_provider": provider,
+        "embedding_model": model,
+        "embedding_property": "sapbert_embedding" if provider == "sapbert" else "embedding",
+    }
