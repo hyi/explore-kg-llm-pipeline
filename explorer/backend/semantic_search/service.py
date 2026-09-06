@@ -1,6 +1,14 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from explorer.backend.models import SemanticSearchResult
+from explorer.backend.semantic_search.ranking import (
+    AnchorRankingConfig,
+    candidate_pool_size,
+    rerank_and_diversify_relationships,
+)
 from src.embeddings.embed_relationships import relationship_similarity_search
 
 
@@ -11,6 +19,16 @@ class SemanticSearchService:
     expansion remains available for callers that explicitly request it.
     """
 
+    def __init__(
+        self,
+        config: AnchorRankingConfig | None = None,
+        relationship_retriever: Callable[..., list[Any]] = relationship_similarity_search,
+        metadata_enricher: Callable[[list[Any]], list[Any]] | None = None,
+    ) -> None:
+        self.config = config or AnchorRankingConfig()
+        self.relationship_retriever = relationship_retriever
+        self.metadata_enricher = metadata_enricher
+
     def search(
         self,
         query: str,
@@ -20,8 +38,17 @@ class SemanticSearchService:
         include_nodes: bool = False,
     ) -> SemanticSearchResult:
         if not include_nodes:
+            raw_k = candidate_pool_size(relationship_k, self.config)
+            candidates = self.relationship_retriever(query, k=raw_k) if raw_k else []
+            if self.metadata_enricher:
+                candidates = self.metadata_enricher(candidates)
             return SemanticSearchResult(
-                relationships=relationship_similarity_search(query, k=relationship_k),
+                relationships=rerank_and_diversify_relationships(
+                    query=query,
+                    candidates=candidates,
+                    requested_k=relationship_k,
+                    config=self.config,
+                ),
                 nodes={},
             )
 

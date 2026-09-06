@@ -27,6 +27,9 @@ def render_candidate_path_cards(
     cards = []
     for index, path in enumerate(paths, start=1):
         selected = path["id"] == selected_path_id
+        anchor_metadata = path.get("anchor_metadata") or {}
+        ranking_reasons = anchor_metadata.get("ranking_reasons") or []
+        reason_text = ", ".join(str(reason) for reason in ranking_reasons[1:3])
         cards.append(
             html.Button(
                 [
@@ -40,7 +43,8 @@ def render_candidate_path_cards(
                     html.Div(path.get("summary") or "(empty path)", className="path-summary"),
                     html.Div(
                         f"Length: {path.get('length', 0)}"
-                        + (f" | Seed predicate: {path.get('seed_predicate')}" if path.get("seed_predicate") else ""),
+                        + (f" | Seed predicate: {path.get('seed_predicate')}" if path.get("seed_predicate") else "")
+                        + (f" | Anchor: {reason_text}" if reason_text else ""),
                         className="path-meta",
                     ),
                 ],

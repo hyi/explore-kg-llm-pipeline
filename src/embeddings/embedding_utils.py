@@ -154,6 +154,7 @@ def get_embedding_client(model: str | None = None):
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
+
         from src.config import OPENAI_API_KEY
         return OpenAIEmbeddings(
             api_key=OPENAI_API_KEY,

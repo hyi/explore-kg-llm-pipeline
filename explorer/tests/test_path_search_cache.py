@@ -8,6 +8,7 @@ from explorer.backend.path_search.cache import (
     normalized_query,
 )
 from explorer.backend.path_search.service import PathSearchService
+from explorer.backend.semantic_search.ranking import AnchorRankingConfig
 
 
 def test_path_search_cache_normalizes_query_and_persists(tmp_path) -> None:
@@ -20,17 +21,41 @@ def test_path_search_cache_normalizes_query_and_persists(tmp_path) -> None:
     assert cache.get("genes involved in chemoresistance", relationship_k=6) is None
 
 
+def test_path_search_cache_key_distinguishes_ranking_options(tmp_path) -> None:
+    cache = PathSearchCache(tmp_path / "path_search_cache.json")
+    paths = [{"id": "path-1", "summary": "cached path"}]
+    base_options = {
+        "ranking_strategy": "dense_query_aware_v1",
+        "anchor_ranking": AnchorRankingConfig(max_per_publication=2).to_cache_dict(),
+    }
+    changed_options = {
+        "ranking_strategy": "dense_query_aware_v1",
+        "anchor_ranking": AnchorRankingConfig(max_per_publication=3).to_cache_dict(),
+    }
+
+    cache.set("genes involved in chemoresistance", relationship_k=5, paths=paths, options=base_options)
+
+    assert cache.get("genes involved in chemoresistance", relationship_k=5, options=base_options) == paths
+    assert cache.get("genes involved in chemoresistance", relationship_k=5, options=changed_options) is None
+
+
 def test_path_search_service_returns_cache_hit_without_live_search(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache = PathSearchCache(tmp_path / "path_search_cache.json")
     paths = [{"id": "path-1", "summary": "cached path"}]
-    cache.set("genes involved in chemoresistance", relationship_k=5, paths=paths)
+    service = PathSearchService(cache=cache)
+    cache.set(
+        "genes involved in chemoresistance",
+        relationship_k=5,
+        paths=paths,
+        options=service._cache_options(semantic_fetch_k=10, paths_per_hit=3),
+    )
 
     def fail_live_search(*_args, **_kwargs):
         raise AssertionError("live search should not run for cache hits")
 
     monkeypatch.setattr("explorer.backend.path_search.service.Neo4jGraphAdapter", fail_live_search)
 
-    result = PathSearchService(cache=cache).search(
+    result = service.search(
         query="genes involved in chemoresistance",
         relationship_k=5,
         semantic_fetch_k=10,

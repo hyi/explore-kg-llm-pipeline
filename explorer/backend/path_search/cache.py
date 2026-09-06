@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 DEFAULT_CACHE_PATH = Path("/tmp/kg_explorer/path_search_cache.json")
 
 
@@ -16,17 +16,28 @@ class PathSearchCache:
         configured_path = os.getenv("KG_EXPLORER_PATH_CACHE")
         self.path = Path(configured_path) if configured_path else path or DEFAULT_CACHE_PATH
 
-    def get(self, query: str, relationship_k: int) -> list[dict[str, Any]] | None:
+    def get(
+        self,
+        query: str,
+        relationship_k: int,
+        options: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]] | None:
         try:
             cache = self._read()
         except OSError:
             return None
-        return cache.get(_cache_key(query, relationship_k))
+        return cache.get(_cache_key(query, relationship_k, options=options))
 
-    def set(self, query: str, relationship_k: int, paths: list[dict[str, Any]]) -> None:
+    def set(
+        self,
+        query: str,
+        relationship_k: int,
+        paths: list[dict[str, Any]],
+        options: dict[str, Any] | None = None,
+    ) -> None:
         try:
             cache = self._read()
-            cache[_cache_key(query, relationship_k)] = paths
+            cache[_cache_key(query, relationship_k, options=options)] = paths
             self._write(cache)
         except OSError:
             # Cache persistence is an optimization only; never fail search because
@@ -62,11 +73,16 @@ def normalized_query(query: str) -> str:
     return " ".join(query.casefold().split())
 
 
-def _cache_key(query: str, relationship_k: int) -> str:
+def _cache_key(
+    query: str,
+    relationship_k: int,
+    options: dict[str, Any] | None = None,
+) -> str:
     payload = {
         "version": CACHE_VERSION,
         "query": normalized_query(query),
         "relationship_k": int(relationship_k),
+        "options": options or {},
     }
     serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

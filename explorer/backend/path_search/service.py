@@ -7,6 +7,10 @@ from explorer.backend.graph_adapter.neo4j import Neo4jGraphAdapter
 from explorer.backend.path_discovery import PathDiscoveryService
 from explorer.backend.path_ranking import PathRankingService
 from explorer.backend.path_search.cache import PathSearchCache
+from explorer.backend.semantic_search.ranking import (
+    ANCHOR_RANKING_STRATEGY,
+    AnchorRankingConfig,
+)
 
 
 @dataclass(frozen=True)
@@ -16,8 +20,13 @@ class PathSearchResult:
 
 
 class PathSearchService:
-    def __init__(self, cache: PathSearchCache | None = None) -> None:
+    def __init__(
+        self,
+        cache: PathSearchCache | None = None,
+        anchor_ranking_config: AnchorRankingConfig | None = None,
+    ) -> None:
         self.cache = cache or PathSearchCache()
+        self.anchor_ranking_config = anchor_ranking_config or AnchorRankingConfig()
 
     def search(
         self,
@@ -26,7 +35,11 @@ class PathSearchService:
         semantic_fetch_k: int,
         paths_per_hit: int,
     ) -> PathSearchResult:
-        cached_paths = self.cache.get(query, relationship_k)
+        cache_options = self._cache_options(
+            semantic_fetch_k=semantic_fetch_k,
+            paths_per_hit=paths_per_hit,
+        )
+        cached_paths = self.cache.get(query, relationship_k, options=cache_options)
         if cached_paths is not None:
             return PathSearchResult(paths=cached_paths, cache_hit=True)
 
@@ -34,7 +47,10 @@ class PathSearchService:
 
         graph = Neo4jGraphAdapter()
         try:
-            semantic_results = SemanticSearchService().search(query, relationship_k=semantic_fetch_k)
+            semantic_results = SemanticSearchService(
+                config=self.anchor_ranking_config,
+                metadata_enricher=graph.enrich_relationship_hits,
+            ).search(query, relationship_k=semantic_fetch_k)
             discovery = PathDiscoveryService(graph)
             ranking = PathRankingService()
             paths = discovery.discover_from_semantic_results(
@@ -47,5 +63,13 @@ class PathSearchService:
         finally:
             graph.close()
 
-        self.cache.set(query, relationship_k, path_dicts)
+        self.cache.set(query, relationship_k, path_dicts, options=cache_options)
         return PathSearchResult(paths=path_dicts, cache_hit=False)
+
+    def _cache_options(self, semantic_fetch_k: int, paths_per_hit: int) -> dict[str, Any]:
+        return {
+            "ranking_strategy": ANCHOR_RANKING_STRATEGY,
+            "semantic_fetch_k": int(semantic_fetch_k),
+            "paths_per_hit": int(paths_per_hit),
+            "anchor_ranking": self.anchor_ranking_config.to_cache_dict(),
+        }

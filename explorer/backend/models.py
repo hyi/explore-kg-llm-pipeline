@@ -35,6 +35,7 @@ class Path:
     seed_object: str | None = None
     seed_predicate: str | None = None
     evidence_text: str | None = None
+    anchor_metadata: dict[str, Any] = field(default_factory=dict)
     id: str = field(default_factory=lambda: str(uuid4()))
 
     @property
@@ -82,6 +83,7 @@ class Path:
             "seed_object": self.seed_object,
             "seed_predicate": self.seed_predicate,
             "evidence_text": self.evidence_text,
+            "anchor_metadata": _jsonable(self.anchor_metadata),
             "nodes": [
                 {
                     "element_id": node.element_id,

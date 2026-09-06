@@ -5,7 +5,12 @@ from typing import Any
 from neo4j import GraphDatabase
 
 from explorer.backend.models import Edge, Node, Path
+from explorer.backend.semantic_search.ranking import compact_anchor_metadata
 from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
+from src.embeddings.embedding_utils import (
+    cypher_escape_identifier,
+    get_embedding_property,
+)
 
 
 class Neo4jGraphAdapter:
@@ -26,6 +31,82 @@ class Neo4jGraphAdapter:
 
     def close(self) -> None:
         self._driver.close()
+
+    def enrich_relationship_hits(self, candidates: list[Any]) -> list[Any]:
+        candidate_keys = []
+        for position, candidate in enumerate(candidates):
+            metadata = dict(getattr(candidate, "metadata", {}) or {})
+            candidate_keys.append(
+                {
+                    "position": position,
+                    "rel_id": _first_present(metadata, "id", "rel_id", "relationship_id"),
+                    "subject": _first_present(metadata, "original_subject", "subject", "llm_subject"),
+                    "object": _first_present(metadata, "original_object", "object", "llm_object"),
+                    "predicate": metadata.get("predicate"),
+                }
+            )
+
+        if not candidate_keys:
+            return []
+
+        cypher = """
+        UNWIND $candidates AS candidate
+        MATCH (start)-[r]->(end)
+        WHERE (
+            candidate.rel_id IS NOT NULL
+            AND r.id = candidate.rel_id
+          )
+          OR (
+            candidate.subject IS NOT NULL
+            AND candidate.object IS NOT NULL
+            AND (
+              start.id = candidate.subject
+              OR toLower(coalesce(start.name, "")) = toLower(candidate.subject)
+            )
+            AND (
+              end.id = candidate.object
+              OR toLower(coalesce(end.name, "")) = toLower(candidate.object)
+            )
+            AND (candidate.predicate IS NULL OR type(r) = candidate.predicate)
+          )
+        WITH candidate, r, start, end, candidate.rel_id IS NOT NULL AND r.id = candidate.rel_id AS exact_rel_id
+        ORDER BY candidate.position, exact_rel_id DESC, elementId(r)
+        WITH candidate, collect({
+          relationship_id: coalesce(r.id, elementId(r)),
+          relationship_element_id: elementId(r),
+          predicate: type(r),
+          subject_id: coalesce(start.id, start.name, elementId(start)),
+          object_id: coalesce(end.id, end.name, elementId(end)),
+          subject_name: coalesce(start.name, start.id, elementId(start)),
+          object_name: coalesce(end.name, end.id, elementId(end)),
+          subject_labels: labels(start),
+          object_labels: labels(end),
+          publications: r.publications,
+          llm_abstract_id: r.llm_abstract_id,
+          abstract_title: r.abstract_title,
+          publication_id: CASE
+            WHEN r.publications IS NOT NULL AND size(r.publications) > 0 THEN r.publications[0]
+            WHEN r.llm_abstract_id IS NOT NULL THEN toString(r.llm_abstract_id)
+            ELSE r.abstract_title
+          END
+        }) AS matches
+        RETURN candidate.position AS position, head(matches) AS metadata
+        """
+
+        with self._driver.session() as session:
+            records = list(session.run(cypher, candidates=candidate_keys))
+
+        enrichment_by_position = {
+            int(record["position"]): dict(record["metadata"] or {})
+            for record in records
+            if record["metadata"]
+        }
+        enriched = []
+        for position, candidate in enumerate(candidates):
+            metadata = dict(getattr(candidate, "metadata", {}) or {})
+            metadata.update(enrichment_by_position.get(position, {}))
+            enriched.append(_candidate_with_metadata(candidate, metadata))
+        return enriched
 
     def candidate_paths_for_semantic_hit(
         self,
@@ -102,6 +183,7 @@ class Neo4jGraphAdapter:
                     seed_object=metadata.get("llm_object") or obj,
                     seed_predicate=metadata.get("predicate"),
                     evidence_text=evidence_text,
+                    anchor_metadata=compact_anchor_metadata(metadata),
                 )
                 if path:
                     paths.append(path)
@@ -220,29 +302,30 @@ class Neo4jGraphAdapter:
         limit: int = 8,
     ) -> dict[str, list[dict[str, Any]]]:
         limit = _bounded_int(limit, minimum=1, maximum=25)
-        cypher = """
+        embedding_property = cypher_escape_identifier(get_embedding_property())
+        cypher = f"""
         MATCH (anchor)
         WHERE elementId(anchor) = $anchor_id
-          AND anchor.embedding IS NOT NULL
+          AND anchor.`{embedding_property}` IS NOT NULL
         MATCH (similar)
         WHERE similar <> anchor
-          AND similar.embedding IS NOT NULL
+          AND similar.`{embedding_property}` IS NOT NULL
         RETURN
-          anchor {
+          anchor {{
             .*,
             element_id: elementId(anchor),
             labels: labels(anchor),
             id: coalesce(anchor.id, anchor.name, elementId(anchor)),
             display_name: coalesce(anchor.name, anchor.id, elementId(anchor))
-          } AS anchor,
-          similar {
+          }} AS anchor,
+          similar {{
             .*,
             element_id: elementId(similar),
             labels: labels(similar),
             id: coalesce(similar.id, similar.name, elementId(similar)),
             display_name: coalesce(similar.name, similar.id, elementId(similar))
-          } AS similar,
-          vector.similarity.cosine(anchor.embedding, similar.embedding) AS score
+          }} AS similar,
+          vector.similarity.cosine(anchor.`{embedding_property}`, similar.`{embedding_property}`) AS score
         ORDER BY score DESC
         LIMIT $limit
         """
@@ -296,6 +379,7 @@ class Neo4jGraphAdapter:
         seed_object: str | None,
         seed_predicate: str | None,
         evidence_text: str | None,
+        anchor_metadata: dict[str, Any] | None = None,
     ) -> Path | None:
         nodes = [_node_from_projection(node) for node in record["nodes"]]
         edges = [_edge_from_projection(edge) for edge in record["relationships"]]
@@ -310,6 +394,7 @@ class Neo4jGraphAdapter:
             seed_object=seed_object,
             seed_predicate=seed_predicate,
             evidence_text=evidence_text,
+            anchor_metadata=anchor_metadata or {},
         )
 
 def _node_from_projection(projection: dict[str, Any]) -> Node:
@@ -340,6 +425,17 @@ def _edge_from_projection(projection: dict[str, Any]) -> Edge:
         object=obj,
         properties=properties,
     )
+
+
+def _candidate_with_metadata(candidate: Any, metadata: dict[str, Any]) -> Any:
+    if hasattr(candidate, "model_copy"):
+        return candidate.model_copy(update={"metadata": metadata})
+
+    import copy
+
+    cloned = copy.copy(candidate)
+    cloned.metadata = metadata
+    return cloned
 
 
 def _first_present(metadata: dict[str, Any], *keys: str) -> str | None:

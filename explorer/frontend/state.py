@@ -41,6 +41,7 @@ def path_from_dict(data: dict[str, Any]) -> Path:
         seed_object=data.get("seed_object"),
         seed_predicate=data.get("seed_predicate"),
         evidence_text=data.get("evidence_text"),
+        anchor_metadata=dict(data.get("anchor_metadata", {})),
         nodes=[
             Node(
                 element_id=node["element_id"],

@@ -31,6 +31,7 @@ def test_path_round_trip_from_dict() -> None:
             )
         ],
         score=0.91,
+        anchor_metadata={"anchor_score": 0.91, "semantic_score": 0.82},
     )
 
     restored = path_from_dict(path.to_dict())
@@ -38,6 +39,7 @@ def test_path_round_trip_from_dict() -> None:
     assert restored.id == "path-1"
     assert restored.summary() == path.summary()
     assert restored.score == 0.91
+    assert restored.anchor_metadata == {"anchor_score": 0.91, "semantic_score": 0.82}
 
 
 def test_visible_subgraph_keeps_initial_path_nodes_protected() -> None:
