@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from explorer.backend.path_search.cache import (
     DEFAULT_CACHE_PATH,
     PathSearchCache,
+    _cache_key,
     normalized_query,
 )
 from explorer.backend.path_search.service import PathSearchService
@@ -37,6 +40,37 @@ def test_path_search_cache_key_distinguishes_ranking_options(tmp_path) -> None:
 
     assert cache.get("genes involved in chemoresistance", relationship_k=5, options=base_options) == paths
     assert cache.get("genes involved in chemoresistance", relationship_k=5, options=changed_options) is None
+
+
+def test_path_search_cache_stores_readable_key_payload(tmp_path) -> None:
+    cache = PathSearchCache(tmp_path / "path_search_cache.json")
+    paths = [{"id": "path-1", "summary": "cached path"}]
+    options = {
+        "embedding_provider": "openai",
+        "embedding_model": "text-embedding-3-small",
+        "embedding_property": "embedding",
+    }
+
+    cache.set("genes involved in chemoresistance", relationship_k=5, paths=paths, options=options)
+
+    payload = json.loads(cache.path.read_text(encoding="utf-8"))
+    entry = next(iter(payload["entries"].values()))
+    assert "version" not in payload
+    assert "version" not in entry["key_payload"]
+    assert entry["key_payload"]["options"] == options
+    assert entry["paths"] == paths
+
+
+def test_path_search_cache_ignores_legacy_unstructured_entries(tmp_path) -> None:
+    cache_path = tmp_path / "path_search_cache.json"
+    key = _cache_key("genes involved in chemoresistance", relationship_k=5)
+    cache_path.write_text(
+        json.dumps({"entries": {key: [{"id": "path-1"}]}}),
+        encoding="utf-8",
+    )
+    cache = PathSearchCache(cache_path)
+
+    assert cache.get("genes involved in chemoresistance", relationship_k=5) is None
 
 
 def test_path_search_cache_clear_removes_server_side_cache_file(tmp_path) -> None:
