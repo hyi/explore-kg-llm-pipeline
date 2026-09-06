@@ -19,6 +19,7 @@ from dash.exceptions import PreventUpdate
 
 from explorer.backend.graph_adapter.neo4j import Neo4jGraphAdapter
 from explorer.backend.path_search import PathSearchService
+from explorer.backend.path_search.cache import PathSearchCache
 from explorer.frontend.components import (
     render_candidate_path_cards,
     render_path_details,
@@ -53,7 +54,26 @@ def register_callbacks(app: Dash) -> None:
         Input("zoom-in-button", "n_clicks"),
         Input("zoom-out-button", "n_clicks"),
         prevent_initial_call=True,
+        )
+
+    @app.callback(
+        Output("status-message", "children", allow_duplicate=True),
+        Input("clear-cache-button", "n_clicks"),
+        prevent_initial_call=True,
     )
+    def clear_server_cache(n_clicks: int | None) -> Any:
+        if not n_clicks:
+            raise PreventUpdate
+
+        cache = PathSearchCache()
+        try:
+            removed = cache.clear()
+        except OSError as exc:
+            return status(f"Failed to clear server cache at {cache.path}: {exc}", "error")
+
+        if removed:
+            return status(f"Cleared server path-search cache at {cache.path}.", "success")
+        return status(f"Server path-search cache was already empty at {cache.path}.", "success")
 
     @app.callback(
         Output("candidate-paths-store", "data"),

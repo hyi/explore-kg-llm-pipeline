@@ -44,6 +44,13 @@ class PathSearchCache:
             # the container filesystem or mounted volume is not writable.
             return
 
+    def clear(self) -> bool:
+        try:
+            self.path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+
     def _read(self) -> dict[str, list[dict[str, Any]]]:
         if not self.path.exists():
             return {}

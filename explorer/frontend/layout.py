@@ -67,6 +67,7 @@ def build_layout() -> html.Div:
                                         className="slider-wrap",
                                     ),
                                     html.Button("Search paths", id="search-button", n_clicks=0, className="primary-button"),
+                                    html.Button("Clear server cache", id="clear-cache-button", n_clicks=0, className="danger-button"),
                                 ],
                                 className="search-actions",
                             ),

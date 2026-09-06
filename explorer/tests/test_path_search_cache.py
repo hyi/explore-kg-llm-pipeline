@@ -39,6 +39,26 @@ def test_path_search_cache_key_distinguishes_ranking_options(tmp_path) -> None:
     assert cache.get("genes involved in chemoresistance", relationship_k=5, options=changed_options) is None
 
 
+def test_path_search_cache_clear_removes_server_side_cache_file(tmp_path) -> None:
+    cache = PathSearchCache(tmp_path / "path_search_cache.json")
+    cache.set("genes involved in chemoresistance", relationship_k=5, paths=[{"id": "path-1"}])
+
+    assert cache.path.exists()
+    assert cache.clear() is True
+    assert cache.path.exists() is False
+    assert cache.clear() is False
+
+
+def test_path_search_cache_options_include_embedding_identity(tmp_path) -> None:
+    service = PathSearchService(cache=PathSearchCache(tmp_path / "path_search_cache.json"))
+
+    options = service._cache_options(semantic_fetch_k=10, paths_per_hit=3)
+
+    assert options["embedding_provider"]
+    assert options["embedding_model"]
+    assert options["embedding_property"] in {"embedding", "sapbert_embedding"}
+
+
 def test_path_search_service_returns_cache_hit_without_live_search(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache = PathSearchCache(tmp_path / "path_search_cache.json")
     paths = [{"id": "path-1", "summary": "cached path"}]

@@ -11,6 +11,8 @@ from explorer.backend.semantic_search.ranking import (
     ANCHOR_RANKING_STRATEGY,
     AnchorRankingConfig,
 )
+from src.config import EMBEDDING_MODEL, EMBEDDING_PROVIDER
+from src.embeddings.embedding_utils import get_embedding_property
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,9 @@ class PathSearchService:
     def _cache_options(self, semantic_fetch_k: int, paths_per_hit: int) -> dict[str, Any]:
         return {
             "ranking_strategy": ANCHOR_RANKING_STRATEGY,
+            "embedding_provider": EMBEDDING_PROVIDER,
+            "embedding_model": EMBEDDING_MODEL,
+            "embedding_property": get_embedding_property(),
             "semantic_fetch_k": int(semantic_fetch_k),
             "paths_per_hit": int(paths_per_hit),
             "anchor_ranking": self.anchor_ranking_config.to_cache_dict(),
