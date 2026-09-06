@@ -13,6 +13,7 @@ build/
 scripts/data/
 src/search/results/
 sapbert_model/
+paper/
 develop-eggs/
 dist/
 downloads/
