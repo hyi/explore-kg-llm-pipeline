@@ -54,12 +54,20 @@ def relationship_similarity_search(query, k=5, model: str | None = None):
         _relationship_stores.cache_clear()
         return _relationship_similarity_search_scan(query, k=k, model=model)
 
+    embedding_property = get_embedding_property(model)
+    embedding_dimensions = get_embedding_dimensions(model=model)
     results = []
-    for rel_type, store in rel_stores.items():
+    for rel_type, store_info in rel_stores.items():
+        store = store_info["store"]
         hits = store.similarity_search_with_score(query, k=k)
         for doc, score in hits:
             doc.metadata["predicate"] = rel_type
             doc.metadata["score"] = score
+            doc.metadata["retrieval_model"] = model or "configured"
+            doc.metadata["retrieval_embedding_property"] = embedding_property
+            doc.metadata["retrieval_expected_dimensions"] = embedding_dimensions
+            doc.metadata["retrieval_method"] = "neo4j_vector_index"
+            doc.metadata["retrieval_index_name"] = store_info["index_name"]
             results.append(doc)
 
     return sorted(
@@ -82,14 +90,17 @@ def _relationship_stores(model: str | None = None):
             model,
         ):
             try:
-                rel_stores[rel_type] = Neo4jVector.from_existing_relationship_index(
-                    embedding=embedding_client,
-                    url=NEO4J_URI,
-                    username=NEO4J_USERNAME,
-                    password=NEO4J_PASSWORD,
-                    index_name=index_name,
-                    text_node_property="semantic_text"
-                )
+                rel_stores[rel_type] = {
+                    "store": Neo4jVector.from_existing_relationship_index(
+                        embedding=embedding_client,
+                        url=NEO4J_URI,
+                        username=NEO4J_USERNAME,
+                        password=NEO4J_PASSWORD,
+                        index_name=index_name,
+                        text_node_property="semantic_text",
+                    ),
+                    "index_name": index_name,
+                }
                 break
             except ValueError as exc:
                 if "does not exist" not in str(exc).lower():
@@ -101,7 +112,9 @@ def _relationship_stores(model: str | None = None):
 def _relationship_similarity_search_scan(query, k=5, model: str | None = None):
     embedding_property = get_embedding_property(model)
     escaped_embedding_property = cypher_escape_identifier(embedding_property)
-    query_embedding = get_embedding_client(model).embed_query(query)
+    embedding_client = get_embedding_client(model)
+    query_embedding = embedding_client.embed_query(query)
+    query_embedding_dimensions = len(query_embedding)
     driver = GraphDatabase.driver(
         NEO4J_URI,
         auth=(NEO4J_USERNAME, NEO4J_PASSWORD),
@@ -130,6 +143,14 @@ def _relationship_similarity_search_scan(query, k=5, model: str | None = None):
                     continue
                 metadata["predicate"] = row["predicate"]
                 metadata["score"] = _cosine_similarity(query_embedding, embedding)
+                metadata["retrieval_model"] = model or "configured"
+                metadata["retrieval_embedding_property"] = embedding_property
+                metadata["retrieval_expected_dimensions"] = get_embedding_dimensions(
+                    embedding_client,
+                    model=model,
+                )
+                metadata["retrieval_query_embedding_dimensions"] = query_embedding_dimensions
+                metadata["retrieval_method"] = "neo4j_scan"
                 results.append(Document(page_content=row["text"], metadata=metadata))
     finally:
         driver.close()
@@ -174,12 +195,12 @@ def _relationship_index_candidates(
 ):
     candidates = [_relationship_index_name(rel_type, model)]
 
-    if (
-        not get_embedding_index_suffix(model)
-        and available_indexes
-        and rel_type in available_indexes
-    ):
-        candidates.extend(available_indexes[rel_type])
+    if available_indexes and rel_type in available_indexes:
+        candidates.extend(
+            index_name
+            for index_name in available_indexes[rel_type]
+            if _index_name_matches_model(index_name, model)
+        )
 
     if not get_embedding_index_suffix(model):
         candidates.extend(
@@ -192,9 +213,19 @@ def _relationship_index_candidates(
 
     deduplicated = []
     for index_name in candidates:
+        if not _index_name_matches_model(index_name, model):
+            continue
         if index_name not in deduplicated:
             deduplicated.append(index_name)
     return deduplicated
+
+
+def _index_name_matches_model(index_name: str, model: str | None = None) -> bool:
+    suffix = get_embedding_index_suffix(model)
+    index_name = index_name.lower()
+    if suffix:
+        return suffix.lower() in index_name
+    return "_sapbert" not in index_name
 
 
 def _relationship_index_name(rel_type, model: str | None = None):

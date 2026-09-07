@@ -48,12 +48,14 @@ class PathSearchCache:
         relationship_k: int,
         paths: list[dict[str, Any]],
         options: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         try:
             cache = self._read()
             key_payload = _cache_key_payload(query, relationship_k, options=options)
             cache[_cache_key_from_payload(key_payload)] = {
                 "key_payload": key_payload,
+                "metadata": metadata or {},
                 "paths": paths,
             }
             self._write(cache)

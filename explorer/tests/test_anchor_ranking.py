@@ -69,14 +69,14 @@ def test_gene_labeled_edge_outranks_higher_raw_similarity_non_gene_edge() -> Non
     )
 
     assert [hit.metadata["id"] for hit in ranked] == ["gene", "non-gene"]
-    assert "gene endpoint label match" in ranked[0].metadata["ranking_reasons"]
+    assert "gene endpoint category match" in ranked[0].metadata["ranking_reasons"]
 
 
 def test_explicit_response_predicate_outranks_comparable_generic_predicate() -> None:
     ranked = rerank_and_diversify_relationships(
         query="drug resistance response in cancer",
         candidates=[
-            doc("generic", 0.85, predicate="biolink:affects"),
+            doc("generic", 0.85, predicate="biolink:affects", subject_labels=["biolink:ChemicalEntity"], text="drug affects tumor sensitivity"),
             doc("explicit", 0.80, predicate="biolink:associated_with_resistance_to"),
         ],
         requested_k=2,
@@ -84,7 +84,75 @@ def test_explicit_response_predicate_outranks_comparable_generic_predicate() -> 
     )
 
     assert [hit.metadata["id"] for hit in ranked] == ["explicit", "generic"]
-    assert "resistance/response predicate match" in ranked[0].metadata["ranking_reasons"]
+    assert "resistance predicate match" in ranked[0].metadata["ranking_reasons"]
+
+
+def test_response_predicate_needs_drug_or_resistance_context_for_strong_boost() -> None:
+    ranked = rerank_and_diversify_relationships(
+        query="drug resistance response in cancer",
+        candidates=[
+            doc(
+                "cell-proliferation-response",
+                0.90,
+                predicate="biolink:decreases_response_to",
+                subject="DACH1",
+                obj="cell proliferation",
+                subject_labels=["biolink:Gene"],
+                object_labels=["biolink:BiologicalProcess"],
+                text="DACH1 decreases glioma cell proliferation",
+            ),
+            doc(
+                "drug-sensitivity",
+                0.80,
+                predicate="biolink:decreases_response_to",
+                subject="CHEBI:1",
+                obj="tumor sensitivity",
+                subject_labels=["biolink:ChemicalEntity"],
+                object_labels=["biolink:Disease"],
+                text="drug decreases tumor sensitivity",
+            ),
+        ],
+        requested_k=2,
+        config=AnchorRankingConfig(max_per_publication=10),
+    )
+
+    assert [hit.metadata["id"] for hit in ranked] == ["drug-sensitivity", "cell-proliferation-response"]
+    assert ranked[0].metadata["ranking_components"]["predicate"] == 0.18
+    assert ranked[1].metadata["ranking_components"]["predicate"] == 0.0
+
+
+def test_mixed_chemical_categories_do_not_receive_gene_boost() -> None:
+    ranked = rerank_and_diversify_relationships(
+        query="genes involved in chemoresistance in cancer",
+        candidates=[
+            doc(
+                "puromycin",
+                0.80,
+                subject="puromycin aminonucleoside",
+                obj="kidney disease",
+                subject_labels=[
+                    "biolink:ChemicalEntity",
+                    "biolink:ChemicalEntityOrGeneOrGeneProduct",
+                ],
+            ),
+            doc(
+                "conditioned-media",
+                0.79,
+                subject="conditioned culture media",
+                obj="bone mineralization",
+                subject_labels=[
+                    "biolink:ChemicalOrDrugOrTreatment",
+                    "biolink:ChemicalEntityOrGeneOrGeneProduct",
+                ],
+                object_labels=["biolink:BiologicalProcess"],
+            ),
+        ],
+        requested_k=2,
+        config=AnchorRankingConfig(max_per_publication=10),
+    )
+
+    assert [hit.metadata["ranking_components"]["gene_endpoint"] for hit in ranked] == [0.0, 0.0]
+    assert all("gene endpoint category match" not in hit.metadata["ranking_reasons"] for hit in ranked)
 
 
 def test_results_fall_back_to_semantic_similarity_when_no_hint_matches() -> None:

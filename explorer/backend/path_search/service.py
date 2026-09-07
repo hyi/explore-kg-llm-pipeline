@@ -14,7 +14,7 @@ from explorer.backend.semantic_search.ranking import (
     ANCHOR_RANKING_STRATEGY,
     AnchorRankingConfig,
 )
-from src.embeddings.embedding_utils import DEFAULT_OPENAI_MODEL, DEFAULT_SAPBERT_MODEL
+from src.embeddings.embedding_utils import DEFAULT_OPENAI_MODEL, DEFAULT_SAPBERT_MODEL, get_embedding_dimensions
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,7 @@ class PathSearchService:
             semantic_results = SemanticSearchService(
                 config=self.anchor_ranking_config,
                 metadata_enricher=graph.enrich_relationship_hits,
+                model=cache_options["embedding_provider"],
             ).search(query, relationship_k=semantic_fetch_k)
             discovery = PathDiscoveryService(graph)
             ranking = PathRankingService()
@@ -67,7 +68,13 @@ class PathSearchService:
         finally:
             graph.close()
 
-        self.cache.set(query, relationship_k, path_dicts, options=cache_options)
+        self.cache.set(
+            query,
+            relationship_k,
+            path_dicts,
+            options=cache_options,
+            metadata={"retrieval_diagnostics": semantic_results.diagnostics},
+        )
         return PathSearchResult(paths=path_dicts, cache_hit=False)
 
     def _cache_options(self, semantic_fetch_k: int, paths_per_hit: int) -> dict[str, Any]:
@@ -96,4 +103,5 @@ def _embedding_cache_identity() -> dict[str, str]:
         "embedding_provider": provider,
         "embedding_model": model,
         "embedding_property": "sapbert_embedding" if provider == "sapbert" else "embedding",
+        "embedding_dimensions": get_embedding_dimensions(model=provider),
     }

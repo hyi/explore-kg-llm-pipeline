@@ -113,6 +113,7 @@ class Path:
 class SemanticSearchResult:
     relationships: list[Any]
     nodes: dict[str, list[Any]]
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 def _jsonable(value: Any) -> Any:

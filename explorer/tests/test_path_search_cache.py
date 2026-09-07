@@ -61,6 +61,33 @@ def test_path_search_cache_stores_readable_key_payload(tmp_path) -> None:
     assert entry["paths"] == paths
 
 
+def test_path_search_cache_stores_optional_diagnostics_metadata(tmp_path) -> None:
+    cache = PathSearchCache(tmp_path / "path_search_cache.json")
+    diagnostics = {
+        "retrieval_diagnostics": {
+            "raw_candidates": [
+                {
+                    "raw_rank": 0,
+                    "relationship_identity": "rel-1",
+                    "semantic_score": 0.9,
+                }
+            ]
+        }
+    }
+
+    cache.set(
+        "genes involved in chemoresistance",
+        relationship_k=5,
+        paths=[{"id": "path-1"}],
+        metadata=diagnostics,
+    )
+
+    payload = json.loads(cache.path.read_text(encoding="utf-8"))
+    entry = next(iter(payload["entries"].values()))
+    assert entry["metadata"] == diagnostics
+    assert cache.get("genes involved in chemoresistance", relationship_k=5) == [{"id": "path-1"}]
+
+
 def test_path_search_cache_ignores_legacy_unstructured_entries(tmp_path) -> None:
     cache_path = tmp_path / "path_search_cache.json"
     key = _cache_key("genes involved in chemoresistance", relationship_k=5)
@@ -91,6 +118,7 @@ def test_path_search_cache_options_include_embedding_identity(tmp_path) -> None:
     assert options["embedding_provider"]
     assert options["embedding_model"]
     assert options["embedding_property"] in {"embedding", "sapbert_embedding"}
+    assert options["embedding_dimensions"] in {768, 1536}
 
 
 def test_embedding_cache_identity_prefers_current_dotenv_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -103,6 +131,7 @@ def test_embedding_cache_identity_prefers_current_dotenv_file(tmp_path, monkeypa
         "embedding_provider": "sapbert",
         "embedding_model": "local-sapbert",
         "embedding_property": "sapbert_embedding",
+        "embedding_dimensions": 768,
     }
 
 

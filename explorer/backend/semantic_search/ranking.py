@@ -45,11 +45,45 @@ BROAD_RESPONSE_PREDICATES = frozenset(
     }
 )
 
-GENE_LIKE_LABEL_TERMS = (
-    "gene",
-    "geneorgeneproduct",
-    "genomicentity",
-    "protein",
+GENE_CATEGORY_LABELS = frozenset(
+    {
+        "biolink:Gene",
+    }
+)
+GENE_PRODUCT_CATEGORY_LABELS = frozenset(
+    {
+        "biolink:GeneOrGeneProduct",
+        "biolink:Protein",
+        "biolink:Polypeptide",
+        "biolink:GeneProductMixin",
+    }
+)
+GENOMIC_VARIANT_CATEGORY_LABELS = frozenset(
+    {
+        "biolink:GenomicEntity",
+        "biolink:SequenceVariant",
+        "biolink:Allele",
+        "biolink:Haplotype",
+    }
+)
+CHEMICAL_CATEGORY_LABELS = frozenset(
+    {
+        "biolink:ChemicalEntity",
+        "biolink:Drug",
+        "biolink:ChemicalOrDrugOrTreatment",
+        "biolink:SmallMolecule",
+    }
+)
+BIOLOGICAL_PROCESS_CATEGORY_LABELS = frozenset(
+    {
+        "biolink:BiologicalProcess",
+        "biolink:BiologicalProcessOrActivity",
+        "biolink:MolecularActivity",
+    }
+)
+DRUG_CONTEXT_TERMS = frozenset(
+    "drug treatment therapy therapeutic chemotherapy chemotherapeutic chemoresistance "
+    "resistance resistant sensitivity sensitive response".split()
 )
 GENE_LIKE_ID_PREFIXES = (
     "ncbigene:",
@@ -210,7 +244,7 @@ def _score_candidate(query: str, candidate: Any, raw_rank: int, hints: QueryHint
             reasons.append("no gene endpoint match")
 
     if hints.wants_resistance_or_response:
-        predicate_component, predicate_reason = _predicate_component(raw_metadata.get("predicate"))
+        predicate_component, predicate_reason = _predicate_component(raw_metadata)
         components["predicate"] = predicate_component
         if predicate_component > 0:
             positive_hint_match = True
@@ -257,8 +291,11 @@ def _gene_endpoint_component(metadata: dict[str, Any]) -> tuple[float, str]:
     object_labels = _labels(metadata, "object")
     labels_available = bool(subject_labels or object_labels)
 
-    if _has_gene_like_label(subject_labels) or _has_gene_like_label(object_labels):
-        return GENE_ENDPOINT_LABEL_BOOST, "gene endpoint label match"
+    subject_tier = _endpoint_category_tier(subject_labels)
+    object_tier = _endpoint_category_tier(object_labels)
+    matched_tier = _gene_compatible_tier(subject_tier) or _gene_compatible_tier(object_tier)
+    if matched_tier:
+        return GENE_ENDPOINT_LABEL_BOOST, f"{matched_tier} endpoint category match"
 
     if labels_available:
         return 0.0, "no gene endpoint match"
@@ -269,12 +306,17 @@ def _gene_endpoint_component(metadata: dict[str, Any]) -> tuple[float, str]:
     return 0.0, "no gene endpoint match"
 
 
-def _predicate_component(predicate: Any) -> tuple[float, str]:
-    predicate_text = str(predicate or "")
+def _predicate_component(metadata: dict[str, Any]) -> tuple[float, str]:
+    predicate_text = str(metadata.get("predicate") or "")
+    has_drug_response_context = _has_drug_response_context(metadata)
+    if predicate_text == "biolink:associated_with_resistance_to":
+        return EXPLICIT_RESPONSE_PREDICATE_BOOST, "resistance predicate match"
     if predicate_text in EXPLICIT_RESPONSE_PREDICATES:
-        return EXPLICIT_RESPONSE_PREDICATE_BOOST, "resistance/response predicate match"
-    if predicate_text in BROAD_RESPONSE_PREDICATES:
-        return BROAD_RESPONSE_PREDICATE_BOOST, "broad response-related predicate match"
+        if has_drug_response_context:
+            return EXPLICIT_RESPONSE_PREDICATE_BOOST, "drug response predicate context match"
+        return 0.0, "response predicate lacks drug/resistance context"
+    if predicate_text in BROAD_RESPONSE_PREDICATES and has_drug_response_context:
+        return BROAD_RESPONSE_PREDICATE_BOOST, "broad drug response context match"
     return 0.0, "no resistance/response predicate match"
 
 
@@ -367,11 +409,28 @@ def _labels(metadata: dict[str, Any], endpoint: str) -> list[str]:
 
 
 def _has_gene_like_label(labels: Iterable[str]) -> bool:
-    for label in labels:
-        compact_label = re.sub(r"[^a-z0-9]", "", label.casefold())
-        if any(term in compact_label for term in GENE_LIKE_LABEL_TERMS):
-            return True
-    return False
+    return bool(_gene_compatible_tier(_endpoint_category_tier(labels)))
+
+
+def _endpoint_category_tier(labels: Iterable[str]) -> str | None:
+    label_set = {str(label) for label in labels}
+    if label_set & GENE_CATEGORY_LABELS:
+        return "gene"
+    if label_set & GENE_PRODUCT_CATEGORY_LABELS:
+        return "gene product"
+    if label_set & GENOMIC_VARIANT_CATEGORY_LABELS:
+        return "genomic variant"
+    if label_set & CHEMICAL_CATEGORY_LABELS:
+        return "chemical"
+    if label_set & BIOLOGICAL_PROCESS_CATEGORY_LABELS:
+        return "biological process"
+    return None
+
+
+def _gene_compatible_tier(tier: str | None) -> str | None:
+    if tier in {"gene", "gene product", "genomic variant"}:
+        return tier
+    return None
 
 
 def _has_gene_lexical_fallback(metadata: dict[str, Any]) -> bool:
@@ -383,6 +442,35 @@ def _has_gene_lexical_fallback(metadata: dict[str, Any]) -> bool:
         if endpoint_type in {"gene", "protein"}:
             return True
     return False
+
+
+def _has_drug_response_context(metadata: dict[str, Any]) -> bool:
+    subject_tier = _endpoint_category_tier(_labels(metadata, "subject"))
+    object_tier = _endpoint_category_tier(_labels(metadata, "object"))
+    has_drug_like_endpoint = "chemical" in {subject_tier, object_tier}
+    text = _edge_specific_text(metadata)
+    tokens = set(_tokens(text))
+    has_response_text = bool(tokens & DRUG_CONTEXT_TERMS)
+    predicate = str(metadata.get("predicate") or "")
+    has_resistance_predicate = "resistance" in predicate
+    return has_resistance_predicate or (has_drug_like_endpoint and has_response_text)
+
+
+def _edge_specific_text(metadata: dict[str, Any]) -> str:
+    keys = (
+        "llm_subject",
+        "llm_subject_qualifier",
+        "llm_relationship",
+        "predicate",
+        "llm_object",
+        "llm_object_qualifier",
+        "llm_statement_qualifier",
+        "llm_subject_type",
+        "llm_object_type",
+        "original_subject",
+        "original_object",
+    )
+    return " ".join(str(metadata.get(key) or "") for key in keys)
 
 
 def _endpoint_value(metadata: dict[str, Any], endpoint: str) -> str:

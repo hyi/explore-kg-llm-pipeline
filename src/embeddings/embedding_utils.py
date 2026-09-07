@@ -1,6 +1,8 @@
 # src/explore_kg_llm/embeddings/embedding_utils.py
 from functools import lru_cache
+import os
 
+from dotenv import dotenv_values
 from langchain_core.embeddings import Embeddings
 
 from src.config import EMBEDDING_MODEL, EMBEDDING_PROVIDER
@@ -99,7 +101,9 @@ def _mean_pool(token_embeddings, attention_mask, torch):
 
 
 def _embedding_provider(model: str | None = None) -> str:
-    return (model or EMBEDDING_PROVIDER).strip().lower()
+    if model:
+        return model.strip().lower()
+    return _current_embedding_provider()
 
 
 def get_embedding_property(model: str | None = None) -> str:
@@ -167,11 +171,32 @@ def get_embedding_client(model: str | None = None):
 
 
 def _embedding_model(provider: str) -> str:
-    if provider == EMBEDDING_PROVIDER:
-        return EMBEDDING_MODEL
+    current_provider = _current_embedding_provider()
+    current_model = _current_embedding_model(current_provider)
+    if provider == current_provider:
+        return current_model
     if provider == "sapbert":
         return DEFAULT_SAPBERT_MODEL
     return DEFAULT_OPENAI_MODEL
+
+
+def _current_embedding_provider() -> str:
+    env_file = dotenv_values(".env")
+    return str(
+        env_file.get("EMBEDDING_PROVIDER")
+        or os.getenv("EMBEDDING_PROVIDER")
+        or EMBEDDING_PROVIDER
+    ).strip().lower()
+
+
+def _current_embedding_model(provider: str) -> str:
+    env_file = dotenv_values(".env")
+    return str(
+        env_file.get("EMBEDDING_MODEL")
+        or os.getenv("EMBEDDING_MODEL")
+        or EMBEDDING_MODEL
+        or (DEFAULT_SAPBERT_MODEL if provider == "sapbert" else DEFAULT_OPENAI_MODEL)
+    ).strip()
 
 
 def print_search_result(results):

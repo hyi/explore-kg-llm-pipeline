@@ -7,9 +7,11 @@ from explorer.backend.semantic_search import AnchorRankingConfig, SemanticSearch
 
 def test_semantic_search_overfetches_and_returns_requested_count() -> None:
     requested_ks = []
+    requested_models = []
 
-    def retriever(_query: str, k: int) -> list[Document]:
+    def retriever(_query: str, k: int, model: str | None = None) -> list[Document]:
         requested_ks.append(k)
+        requested_models.append(model)
         return [
             Document(
                 page_content=f"edge {index}",
@@ -32,17 +34,19 @@ def test_semantic_search_overfetches_and_returns_requested_count() -> None:
             max_per_publication=10,
         ),
         relationship_retriever=retriever,
+        model="sapbert",
     )
 
     result = service.search("broad cancer mechanisms", relationship_k=3)
 
     assert requested_ks == [12]
+    assert requested_models == ["sapbert"]
     assert len(result.relationships) == 3
     assert [hit.metadata["id"] for hit in result.relationships] == ["rel-0", "rel-1", "rel-2"]
 
 
 def test_semantic_search_applies_batch_metadata_enrichment_before_ranking() -> None:
-    def retriever(_query: str, k: int) -> list[Document]:
+    def retriever(_query: str, k: int, model: str | None = None) -> list[Document]:
         return [
             Document(
                 page_content="PTEN cancer",
@@ -88,3 +92,32 @@ def test_semantic_search_applies_batch_metadata_enrichment_before_ranking() -> N
     assert [hit.metadata["id"] for hit in result.relationships] == ["pten", "drug"]
     assert result.relationships[0].metadata["semantic_score"] == 0.84
     assert result.relationships[0].metadata["anchor_score"] == result.relationships[0].metadata["score"]
+
+
+def test_semantic_search_records_raw_candidate_diagnostics() -> None:
+    def retriever(_query: str, k: int, model: str | None = None) -> list[Document]:
+        return [
+            Document(
+                page_content="PTEN cancer",
+                metadata={
+                    "id": "pten",
+                    "score": 0.84,
+                    "predicate": "biolink:associated_with",
+                    "retrieval_embedding_property": "sapbert_embedding",
+                    "retrieval_expected_dimensions": 768,
+                    "retrieval_method": "neo4j_vector_index",
+                    "retrieval_index_name": "biolink:associated_with_sapbert_vector_idx",
+                },
+            )
+        ]
+
+    result = SemanticSearchService(relationship_retriever=retriever, model="sapbert").search(
+        "genes involved in chemoresistance in cancer",
+        relationship_k=1,
+    )
+
+    assert result.diagnostics["retrieval_model"] == "sapbert"
+    assert result.diagnostics["raw_candidate_k"] == 25
+    assert result.diagnostics["raw_candidates"][0]["raw_rank"] == 0
+    assert result.diagnostics["raw_candidates"][0]["semantic_score"] == 0.84
+    assert result.diagnostics["raw_candidates"][0]["retrieval_embedding_property"] == "sapbert_embedding"

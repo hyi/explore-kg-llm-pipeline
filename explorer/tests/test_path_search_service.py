@@ -42,10 +42,14 @@ def test_path_search_uses_semantic_anchor_order_before_max_path_truncation(
     tmp_path,
     monkeypatch,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("EMBEDDING_PROVIDER=sapbert\nEMBEDDING_MODEL=local-sapbert\n", encoding="utf-8")
     fake_graph = FakeGraph()
+    requested_models = []
 
     class FakeSemanticSearchService:
-        def __init__(self, **_kwargs) -> None:
+        def __init__(self, **kwargs) -> None:
+            requested_models.append(kwargs.get("model"))
             return None
 
         def search(self, query: str, relationship_k: int):
@@ -62,6 +66,7 @@ def test_path_search_uses_semantic_anchor_order_before_max_path_truncation(
                     ),
                 ],
                 nodes={},
+                diagnostics={"raw_candidates": [{"raw_rank": 0, "relationship_identity": "first"}]},
             )
 
     monkeypatch.setattr("explorer.backend.path_search.service.Neo4jGraphAdapter", lambda: fake_graph)
@@ -76,3 +81,6 @@ def test_path_search_uses_semantic_anchor_order_before_max_path_truncation(
 
     assert result.paths[0]["seed_subject"] == "first"
     assert fake_graph.seen_anchor_ids == ["first"]
+    assert requested_models == ["sapbert"]
+    payload = (tmp_path / "cache.json").read_text(encoding="utf-8")
+    assert "raw_candidates" in payload
