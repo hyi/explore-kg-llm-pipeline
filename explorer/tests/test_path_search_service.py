@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from langchain_core.documents import Document
 
 from explorer.backend.models import Edge, Node, Path, SemanticSearchResult
@@ -31,6 +33,12 @@ class FakeGraph:
                 edges=[edge],
                 score=score,
                 seed_subject=metadata["id"],
+                anchor_metadata={
+                    "relationship_identity": metadata.get("relationship_identity", metadata["id"]),
+                    "anchor_score": score,
+                    "semantic_score": metadata.get("semantic_score"),
+                    "raw_rank": metadata.get("raw_rank"),
+                },
             )
         ]
 
@@ -38,7 +46,7 @@ class FakeGraph:
         return None
 
 
-def test_path_search_uses_semantic_anchor_order_before_max_path_truncation(
+def test_path_search_discovers_all_selected_anchors_before_final_truncation(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -58,15 +66,136 @@ def test_path_search_uses_semantic_anchor_order_before_max_path_truncation(
                 relationships=[
                     Document(
                         page_content="first selected anchor",
-                        metadata={"id": "first", "score": 0.4, "predicate": "biolink:related_to"},
+                        metadata={
+                            "id": "first",
+                            "relationship_identity": "first",
+                            "score": 0.4,
+                            "semantic_score": 0.3,
+                            "raw_rank": 0,
+                            "predicate": "biolink:related_to",
+                        },
                     ),
                     Document(
                         page_content="second anchor",
-                        metadata={"id": "second", "score": 0.9, "predicate": "biolink:related_to"},
+                        metadata={
+                            "id": "second",
+                            "relationship_identity": "second",
+                            "score": 0.9,
+                            "semantic_score": 0.9,
+                            "raw_rank": 1,
+                            "predicate": "biolink:related_to",
+                        },
                     ),
                 ],
                 nodes={},
-                diagnostics={"raw_candidates": [{"raw_rank": 0, "relationship_identity": "first"}]},
+                diagnostics={
+                    "raw_candidates": [
+                        {"raw_rank": 0, "relationship_identity": "first"},
+                        {"raw_rank": 1, "relationship_identity": "second"},
+                    ],
+                    "raw_semantic_candidates": [
+                        {
+                            "raw_rank": 0,
+                            "rerank_rank": 0,
+                            "relationship_identity": "first",
+                            "semantic_score": 0.3,
+                            "anchor_score": 0.4,
+                            "ranking_components": {"semantic": 0.3, "gene_endpoint": 0.1},
+                            "ranking_reasons": ["gene endpoint category match"],
+                            "query_hints": {"wants_gene": True, "wants_resistance_or_response": True},
+                            "matched_query_facets": ["gene_endpoint"],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "first-s", "object": "first-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                            "exclusion_reason": None,
+                        },
+                        {
+                            "raw_rank": 1,
+                            "rerank_rank": 1,
+                            "relationship_identity": "second",
+                            "semantic_score": 0.9,
+                            "anchor_score": 0.9,
+                            "ranking_components": {"semantic": 0.9},
+                            "ranking_reasons": ["semantic score 0.9000"],
+                            "query_hints": {"wants_gene": True, "wants_resistance_or_response": True},
+                            "matched_query_facets": [],
+                            "publication_id": "pub-2",
+                            "anchor_entities": {"subject": "second-s", "object": "second-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                            "exclusion_reason": None,
+                        },
+                    ],
+                    "reranked_candidates": [
+                        {
+                            "raw_rank": 0,
+                            "rerank_rank": 0,
+                            "relationship_identity": "first",
+                            "semantic_score": 0.3,
+                            "anchor_score": 0.4,
+                            "ranking_components": {"semantic": 0.3, "gene_endpoint": 0.1},
+                            "ranking_reasons": ["gene endpoint category match"],
+                            "query_hints": {"wants_gene": True, "wants_resistance_or_response": True},
+                            "matched_query_facets": ["gene_endpoint"],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "first-s", "object": "first-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                            "exclusion_reason": None,
+                        },
+                        {
+                            "raw_rank": 1,
+                            "rerank_rank": 1,
+                            "relationship_identity": "second",
+                            "semantic_score": 0.9,
+                            "anchor_score": 0.9,
+                            "ranking_components": {"semantic": 0.9},
+                            "ranking_reasons": ["semantic score 0.9000"],
+                            "query_hints": {"wants_gene": True, "wants_resistance_or_response": True},
+                            "matched_query_facets": [],
+                            "publication_id": "pub-2",
+                            "anchor_entities": {"subject": "second-s", "object": "second-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                            "exclusion_reason": None,
+                        },
+                    ],
+                    "selected_anchors": [
+                        {
+                            "raw_rank": 0,
+                            "rerank_rank": 0,
+                            "relationship_identity": "first",
+                            "semantic_score": 0.3,
+                            "anchor_score": 0.4,
+                            "ranking_components": {"semantic": 0.3, "gene_endpoint": 0.1},
+                            "ranking_reasons": ["gene endpoint category match"],
+                            "query_hints": {"wants_gene": True, "wants_resistance_or_response": True},
+                            "matched_query_facets": ["gene_endpoint"],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "first-s", "object": "first-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                            "exclusion_reason": None,
+                        },
+                        {
+                            "raw_rank": 1,
+                            "rerank_rank": 1,
+                            "relationship_identity": "second",
+                            "semantic_score": 0.9,
+                            "anchor_score": 0.9,
+                            "ranking_components": {"semantic": 0.9},
+                            "ranking_reasons": ["semantic score 0.9000"],
+                            "query_hints": {"wants_gene": True, "wants_resistance_or_response": True},
+                            "matched_query_facets": [],
+                            "publication_id": "pub-2",
+                            "anchor_entities": {"subject": "second-s", "object": "second-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                            "exclusion_reason": None,
+                        },
+                    ],
+                },
             )
 
     monkeypatch.setattr("explorer.backend.path_search.service.Neo4jGraphAdapter", lambda: fake_graph)
@@ -79,8 +208,133 @@ def test_path_search_uses_semantic_anchor_order_before_max_path_truncation(
         paths_per_hit=1,
     )
 
-    assert result.paths[0]["seed_subject"] == "first"
-    assert fake_graph.seen_anchor_ids == ["first"]
+    assert result.paths[0]["seed_subject"] == "second"
+    assert fake_graph.seen_anchor_ids == ["first", "second"]
     assert requested_models == ["sapbert"]
     payload = (tmp_path / "cache.json").read_text(encoding="utf-8")
     assert "raw_candidates" in payload
+
+
+def test_path_search_cache_records_raw_to_final_diagnostics(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text("EMBEDDING_PROVIDER=sapbert\nEMBEDDING_MODEL=local-sapbert\n", encoding="utf-8")
+    fake_graph = FakeGraph()
+
+    class FakeSemanticSearchService:
+        def __init__(self, **_kwargs) -> None:
+            return None
+
+        def search(self, query: str, relationship_k: int):
+            return SemanticSearchResult(
+                relationships=[
+                    Document(
+                        page_content="selected anchor",
+                        metadata={
+                            "id": "first",
+                            "relationship_identity": "first",
+                            "score": 0.7,
+                            "semantic_score": 0.6,
+                            "raw_rank": 0,
+                            "predicate": "biolink:related_to",
+                        },
+                    )
+                ],
+                nodes={},
+                diagnostics={
+                    "raw_semantic_candidates": [
+                        {
+                            "raw_rank": 0,
+                            "rerank_rank": 0,
+                            "relationship_identity": "first",
+                            "semantic_score": 0.6,
+                            "anchor_score": 0.7,
+                            "ranking_components": {"semantic": 0.6, "gene_endpoint": 0.1},
+                            "matched_query_facets": ["gene_endpoint"],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "first-s", "object": "first-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                        },
+                        {
+                            "raw_rank": 1,
+                            "rerank_rank": 1,
+                            "relationship_identity": "excluded",
+                            "semantic_score": 0.5,
+                            "anchor_score": 0.5,
+                            "ranking_components": {"semantic": 0.5},
+                            "matched_query_facets": [],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "excluded-s", "object": "excluded-o"},
+                            "entered_selected_anchor_set": False,
+                            "exclusion_reason": "selection_limit_reached",
+                            "exclusion_pass": "diversity_pass",
+                        },
+                    ],
+                    "reranked_candidates": [
+                        {
+                            "raw_rank": 0,
+                            "rerank_rank": 0,
+                            "relationship_identity": "first",
+                            "semantic_score": 0.6,
+                            "anchor_score": 0.7,
+                            "ranking_components": {"semantic": 0.6, "gene_endpoint": 0.1},
+                            "matched_query_facets": ["gene_endpoint"],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "first-s", "object": "first-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                        },
+                        {
+                            "raw_rank": 1,
+                            "rerank_rank": 1,
+                            "relationship_identity": "excluded",
+                            "semantic_score": 0.5,
+                            "anchor_score": 0.5,
+                            "ranking_components": {"semantic": 0.5},
+                            "matched_query_facets": [],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "excluded-s", "object": "excluded-o"},
+                            "entered_selected_anchor_set": False,
+                            "exclusion_reason": "selection_limit_reached",
+                            "exclusion_pass": "diversity_pass",
+                        },
+                    ],
+                    "selected_anchors": [
+                        {
+                            "raw_rank": 0,
+                            "rerank_rank": 0,
+                            "relationship_identity": "first",
+                            "semantic_score": 0.6,
+                            "anchor_score": 0.7,
+                            "ranking_components": {"semantic": 0.6, "gene_endpoint": 0.1},
+                            "matched_query_facets": ["gene_endpoint"],
+                            "publication_id": "pub-1",
+                            "anchor_entities": {"subject": "first-s", "object": "first-o"},
+                            "entered_selected_anchor_set": True,
+                            "selection_pass": "diversity_pass",
+                        }
+                    ],
+                },
+            )
+
+    monkeypatch.setattr("explorer.backend.path_search.service.Neo4jGraphAdapter", lambda: fake_graph)
+    monkeypatch.setattr("explorer.backend.semantic_search.SemanticSearchService", FakeSemanticSearchService)
+
+    PathSearchService(cache=PathSearchCache(tmp_path / "cache.json")).search(
+        query="genes involved in chemoresistance",
+        relationship_k=1,
+        semantic_fetch_k=2,
+        paths_per_hit=1,
+    )
+
+    payload = json.loads((tmp_path / "cache.json").read_text(encoding="utf-8"))
+    metadata = next(iter(payload["entries"].values()))["metadata"]
+    diagnostics = metadata["path_search_diagnostics"]
+
+    assert diagnostics["raw_semantic_candidates"][0]["number_of_paths_discovered"] == 1
+    assert diagnostics["raw_semantic_candidates"][0]["path_selection_status"] == "has_displayed_path"
+    assert diagnostics["raw_semantic_candidates"][1]["path_selection_status"] == "not_selected_as_anchor"
+    assert diagnostics["enriched_reranked_candidates"][0]["ranking_components"] == {"semantic": 0.6, "gene_endpoint": 0.1}
+    assert diagnostics["diversified_semantic_anchors"][0]["relationship_identity"] == "first"
+    assert diagnostics["discovered_paths"][0]["anchor_relationship_identity"] == "first"
+    assert diagnostics["final_displayed_paths"][0]["selected_for_display"] is True

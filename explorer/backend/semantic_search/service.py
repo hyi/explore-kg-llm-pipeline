@@ -9,7 +9,7 @@ from explorer.backend.semantic_search.ranking import (
     candidate_pool_size,
     publication_identity,
     relationship_identity,
-    rerank_and_diversify_relationships,
+    rerank_relationships_with_diagnostics,
 )
 from src.embeddings.embed_relationships import relationship_similarity_search
 
@@ -46,19 +46,28 @@ class SemanticSearchService:
             candidates = self.relationship_retriever(query, k=raw_k, model=self.model) if raw_k else []
             if self.metadata_enricher:
                 candidates = self.metadata_enricher(candidates)
+            ranking_result = rerank_relationships_with_diagnostics(
+                query=query,
+                candidates=candidates,
+                requested_k=relationship_k,
+                config=self.config,
+            )
+            raw_candidate_diagnostics = sorted(
+                ranking_result.diagnostics["ranked_candidates"],
+                key=lambda item: item["raw_rank"],
+            )
             diagnostics = {
                 "requested_relationship_k": relationship_k,
                 "raw_candidate_k": raw_k,
                 "retrieval_model": self.model or "configured",
-                "raw_candidates": _candidate_diagnostics(candidates),
+                "query_hints": ranking_result.diagnostics["query_hints"],
+                "raw_candidates": raw_candidate_diagnostics,
+                "raw_semantic_candidates": raw_candidate_diagnostics,
+                "reranked_candidates": ranking_result.diagnostics["ranked_candidates"],
+                "selected_anchors": ranking_result.diagnostics["selected_anchors"],
             }
             return SemanticSearchResult(
-                relationships=rerank_and_diversify_relationships(
-                    query=query,
-                    candidates=candidates,
-                    requested_k=relationship_k,
-                    config=self.config,
-                ),
+                relationships=ranking_result.relationships,
                 nodes={},
                 diagnostics=diagnostics,
             )
