@@ -1,6 +1,6 @@
 # src/explore_kg_llm/embeddings/embedding_utils.py
-from functools import lru_cache
 import os
+from functools import lru_cache
 
 from dotenv import dotenv_values
 from langchain_core.embeddings import Embeddings

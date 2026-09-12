@@ -75,7 +75,7 @@ def get_node_stores(model: str | None = None):
                 index_name=node_index_name(label, model),
                 text_node_property="node_text"
             )
-    except Exception:
+    except Exception:  # noqa: BLE001 - absence/misconfiguration of optional vector indexes triggers scan fallback.
         return {}
     return stores
 

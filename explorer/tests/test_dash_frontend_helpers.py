@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from explorer.backend.models import Edge, Node, Path
+from explorer.frontend.callbacks import _bounded_expansion_limit, _parse_comma_separated
 from explorer.frontend.components import render_path_details
 from explorer.frontend.graph import (
     cytoscape_elements,
@@ -250,6 +251,36 @@ def test_node_action_panel_hides_stale_node_message_for_new_selection() -> None:
     assert messages == []
 
 
+def test_node_action_panel_includes_ranked_expansion_controls() -> None:
+    path = {"nodes": [{"element_id": "n1"}], "edges": []}
+    context = {
+        "base_subgraph": {"nodes": [{"id": "n1", "label": "Node 1"}], "edges": []},
+        "semantic_subgraphs": {},
+        "hidden_ids": [],
+        "active_query": "genes in cancer",
+        "connected_expansion_limit": 7,
+        "expansion_direction": "outgoing",
+        "expansion_categories": ["biolink:Gene"],
+        "expansion_predicates": ["biolink:affects_response_to"],
+    }
+
+    panel = node_action_panel(path, context, selected_node_id="n1")
+    by_id = {component.id: component for component in _walk_components(panel) if getattr(component, "id", None)}
+
+    assert by_id["expansion-query-input"].value == "genes in cancer"
+    assert by_id["expansion-limit-input"].value == 7
+    assert by_id["expansion-direction-dropdown"].value == "outgoing"
+    assert by_id["expansion-category-filter-input"].value == "biolink:Gene"
+    assert by_id["expansion-predicate-filter-input"].value == "biolink:affects_response_to"
+
+
+def test_expansion_filter_helpers_parse_and_bound_values() -> None:
+    assert _parse_comma_separated("biolink:Gene, biolink:Disease,,") == ["biolink:Gene", "biolink:Disease"]
+    assert _bounded_expansion_limit(None) == 12
+    assert _bounded_expansion_limit("200") == 50
+    assert _bounded_expansion_limit("bad") == 12
+
+
 def test_expanded_focus_nodes_are_green_unless_on_initial_path() -> None:
     path = {
         "id": "path-1",
@@ -292,3 +323,15 @@ def test_exploration_stores_are_not_browser_persistent() -> None:
     assert stores["selected-path-id-store"].storage_type == "memory"
     assert stores["context-store"].storage_type == "memory"
     assert stores["session-store"].storage_type == "memory"
+
+
+def _walk_components(component):
+    yield component
+    children = getattr(component, "children", None)
+    if children is None:
+        return
+    if not isinstance(children, list):
+        children = [children]
+    for child in children:
+        if hasattr(child, "children") or hasattr(child, "id"):
+            yield from _walk_components(child)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from dotenv import dotenv_values
@@ -15,7 +15,12 @@ from explorer.backend.semantic_search.ranking import (
     ANCHOR_RANKING_STRATEGY,
     AnchorRankingConfig,
 )
-from src.embeddings.embedding_utils import DEFAULT_OPENAI_MODEL, DEFAULT_SAPBERT_MODEL, get_embedding_dimensions
+from explorer.backend.semantic_search.retrieval import RetrievalConfig
+from src.embeddings.embedding_utils import (
+    DEFAULT_OPENAI_MODEL,
+    DEFAULT_SAPBERT_MODEL,
+    get_embedding_dimensions,
+)
 
 
 @dataclass(frozen=True)
@@ -29,9 +34,11 @@ class PathSearchService:
         self,
         cache: PathSearchCache | None = None,
         anchor_ranking_config: AnchorRankingConfig | None = None,
+        retrieval_config: RetrievalConfig | None = None,
     ) -> None:
         self.cache = cache or PathSearchCache()
         self.anchor_ranking_config = anchor_ranking_config or AnchorRankingConfig()
+        self.retrieval_config = retrieval_config or _retrieval_config_from_env()
 
     def search(
         self,
@@ -54,6 +61,8 @@ class PathSearchService:
         try:
             semantic_results = SemanticSearchService(
                 config=self.anchor_ranking_config,
+                retrieval_config=self.retrieval_config,
+                keyword_retriever=getattr(graph, "keyword_relationship_search", None),
                 metadata_enricher=graph.enrich_relationship_hits,
                 model=cache_options["embedding_provider"],
             ).search(query, relationship_k=semantic_fetch_k)
@@ -97,6 +106,8 @@ class PathSearchService:
             "semantic_fetch_k": int(semantic_fetch_k),
             "paths_per_hit": int(paths_per_hit),
             "path_discovery_strategy": "discover_all_selected_anchors_v1",
+            "retrieval_identity_strategy": "relationship_element_id_metadata_v1_keyword_no_semantic_text_v1",
+            "retrieval": self.retrieval_config.to_cache_dict(),
             "anchor_ranking": self.anchor_ranking_config.to_cache_dict(),
         }
 
@@ -119,6 +130,16 @@ def _embedding_cache_identity() -> dict[str, str]:
         "embedding_property": "sapbert_embedding" if provider == "sapbert" else "embedding",
         "embedding_dimensions": get_embedding_dimensions(model=provider),
     }
+
+
+def _retrieval_config_from_env() -> RetrievalConfig:
+    env_file = dotenv_values(".env")
+    mode = str(
+        env_file.get("KG_EXPLORER_RETRIEVAL_MODE")
+        or os.getenv("KG_EXPLORER_RETRIEVAL_MODE")
+        or "dense"
+    ).strip().lower()
+    return RetrievalConfig(mode=mode)
 
 
 def _path_search_diagnostics(
@@ -203,6 +224,13 @@ def _path_diagnostic(
         "anchor_relationship_identity": path.anchor_metadata.get("relationship_identity"),
         "anchor_score": path.anchor_metadata.get("anchor_score"),
         "semantic_score": path.anchor_metadata.get("semantic_score"),
+        "retrieval_score": path.anchor_metadata.get("retrieval_score"),
+        "fusion_score": path.anchor_metadata.get("fusion_score"),
+        "retrieval_channels": path.anchor_metadata.get("retrieval_channels"),
+        "dense_rank": path.anchor_metadata.get("dense_rank"),
+        "dense_score": path.anchor_metadata.get("dense_score"),
+        "keyword_rank": path.anchor_metadata.get("keyword_rank"),
+        "keyword_score": path.anchor_metadata.get("keyword_score"),
         "raw_rank": path.anchor_metadata.get("raw_rank"),
         "seed_subject": path.seed_subject,
         "seed_object": path.seed_object,

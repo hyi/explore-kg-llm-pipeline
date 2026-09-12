@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from langchain_core.documents import Document
 
-from explorer.backend.semantic_search import AnchorRankingConfig, SemanticSearchService
+from explorer.backend.semantic_search import (
+    AnchorRankingConfig,
+    RetrievalConfig,
+    SemanticSearchService,
+)
 
 
 def test_semantic_search_overfetches_and_returns_requested_count() -> None:
@@ -121,3 +125,60 @@ def test_semantic_search_records_raw_candidate_diagnostics() -> None:
     assert result.diagnostics["raw_candidates"][0]["raw_rank"] == 0
     assert result.diagnostics["raw_candidates"][0]["semantic_score"] == 0.84
     assert result.diagnostics["raw_candidates"][0]["retrieval_embedding_property"] == "sapbert_embedding"
+
+
+def test_semantic_search_hybrid_mode_preserves_channel_ranks_and_scores() -> None:
+    def dense_retriever(_query: str, k: int, model: str | None = None) -> list[Document]:
+        return [
+            Document(
+                page_content="dense shared",
+                metadata={
+                    "id": "shared",
+                    "score": 0.90,
+                    "predicate": "biolink:related_to",
+                    "original_subject": "GENE1",
+                    "original_object": "cancer",
+                    "subject_labels": ["biolink:Gene"],
+                },
+            )
+        ]
+
+    def keyword_retriever(_query: str, k: int) -> list[Document]:
+        return [
+            Document(
+                page_content="keyword shared",
+                metadata={
+                    "id": "shared",
+                    "score": 5.0,
+                    "predicate": "biolink:related_to",
+                    "original_subject": "GENE1",
+                    "original_object": "cancer",
+                    "subject_labels": ["biolink:Gene"],
+                },
+            ),
+            Document(
+                page_content="keyword only",
+                metadata={
+                    "id": "keyword-only",
+                    "score": 4.0,
+                    "predicate": "biolink:related_to",
+                    "original_subject": "GENE2",
+                    "original_object": "cancer",
+                    "subject_labels": ["biolink:Gene"],
+                },
+            ),
+        ]
+
+    result = SemanticSearchService(
+        relationship_retriever=dense_retriever,
+        keyword_retriever=keyword_retriever,
+        retrieval_config=RetrievalConfig(mode="hybrid"),
+        config=AnchorRankingConfig(max_per_publication=10),
+    ).search("genes involved in cancer", relationship_k=2)
+
+    assert result.diagnostics["retrieval"]["retrieval_mode"] == "hybrid"
+    assert result.diagnostics["retrieval"]["degraded"] is False
+    assert result.diagnostics["raw_candidates"][0]["retrieval_channels"] == ["dense", "keyword"]
+    assert result.diagnostics["raw_candidates"][0]["dense_rank"] == 0
+    assert result.diagnostics["raw_candidates"][0]["keyword_rank"] == 0
+    assert len(result.relationships) == 2

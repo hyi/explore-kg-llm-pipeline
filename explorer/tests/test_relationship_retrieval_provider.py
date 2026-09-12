@@ -60,6 +60,7 @@ def test_openai_scan_retrieval_queries_embedding_property(monkeypatch) -> None:
     assert "r.`embedding` IS NOT NULL" in str(captured["query"])
     assert "r.`embedding` AS embedding" in str(captured["query"])
     assert "sapbert_embedding" not in str(captured["query"])
+    assert "type(r) IN $relationship_types" not in str(captured["query"])
 
 
 def test_sapbert_scan_retrieval_queries_sapbert_embedding_property(monkeypatch) -> None:
@@ -97,6 +98,7 @@ def test_scan_retrieval_records_query_embedding_dimensions(monkeypatch) -> None:
 
 def test_vector_retrieval_records_provider_specific_index_and_dimensions(monkeypatch) -> None:
     captured_indexes: list[str] = []
+    captured_retrieval_queries: list[str] = []
 
     class FakeStore:
         def similarity_search_with_score(self, _query: str, k: int):
@@ -104,9 +106,17 @@ def test_vector_retrieval_records_provider_specific_index_and_dimensions(monkeyp
 
     def fake_from_existing_relationship_index(**kwargs):
         captured_indexes.append(kwargs["index_name"])
+        captured_retrieval_queries.append(kwargs["retrieval_query"])
         return FakeStore()
 
-    monkeypatch.setattr(embed_relationships, "_relationship_vector_indexes_by_type", lambda: {})
+    monkeypatch.setattr(
+        embed_relationships,
+        "_relationship_vector_indexes_by_type",
+        lambda: {
+            "biolink:related_to": ["biolink_related_to_sapbert_vector_idx"],
+            "biolink:custom_predicate": ["biolink_custom_predicate_sapbert_vector_idx"],
+        },
+    )
     monkeypatch.setattr(embed_relationships, "get_embedding_client", lambda model=None: FakeEmbeddingClient(768))
     monkeypatch.setattr(
         embed_relationships.Neo4jVector,
@@ -119,6 +129,10 @@ def test_vector_retrieval_records_provider_specific_index_and_dimensions(monkeyp
 
     assert captured_indexes
     assert all("_sapbert_vector_idx" in index_name for index_name in captured_indexes)
+    assert "biolink:custom_predicate_sapbert_vector_idx" in captured_indexes
+    assert all("elementId(relationship)" in query for query in captured_retrieval_queries)
+    assert all("relationship_id:" in query for query in captured_retrieval_queries)
+    assert all("subject_labels:" in query for query in captured_retrieval_queries)
 
 
 def test_openai_index_candidates_exclude_sapbert_indexes() -> None:
@@ -167,8 +181,11 @@ def test_relationship_store_raises_dimension_mismatch_candidate(monkeypatch) -> 
             )
         return FakeStore()
 
-    monkeypatch.setattr(embed_relationships, "RELATIONSHIP_TYPES", ["biolink:related_to"])
-    monkeypatch.setattr(embed_relationships, "_relationship_vector_indexes_by_type", lambda: {})
+    monkeypatch.setattr(
+        embed_relationships,
+        "_relationship_vector_indexes_by_type",
+        lambda: {"biolink:related_to": ["bad_vector_idx"]},
+    )
     monkeypatch.setattr(embed_relationships, "_relationship_index_candidates", lambda *_args, **_kwargs: ["bad_vector_idx", "good_vector_idx"])
     monkeypatch.setattr(embed_relationships, "get_embedding_client", lambda model=None: FakeEmbeddingClient(1536))
     monkeypatch.setattr(

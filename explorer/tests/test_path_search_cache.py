@@ -10,8 +10,12 @@ from explorer.backend.path_search.cache import (
     _cache_key,
     normalized_query,
 )
-from explorer.backend.path_search.service import PathSearchService, _embedding_cache_identity
+from explorer.backend.path_search.service import (
+    PathSearchService,
+    _embedding_cache_identity,
+)
 from explorer.backend.semantic_search.ranking import AnchorRankingConfig
+from explorer.backend.semantic_search.retrieval import RetrievalConfig
 
 
 def test_path_search_cache_normalizes_query_and_persists(tmp_path) -> None:
@@ -111,7 +115,10 @@ def test_path_search_cache_clear_removes_server_side_cache_file(tmp_path) -> Non
 
 
 def test_path_search_cache_options_include_embedding_identity(tmp_path) -> None:
-    service = PathSearchService(cache=PathSearchCache(tmp_path / "path_search_cache.json"))
+    service = PathSearchService(
+        cache=PathSearchCache(tmp_path / "path_search_cache.json"),
+        retrieval_config=RetrievalConfig(mode="dense"),
+    )
 
     options = service._cache_options(semantic_fetch_k=10, paths_per_hit=3)
 
@@ -119,6 +126,8 @@ def test_path_search_cache_options_include_embedding_identity(tmp_path) -> None:
     assert options["embedding_model"]
     assert options["embedding_property"] in {"embedding", "sapbert_embedding"}
     assert options["embedding_dimensions"] in {768, 1536}
+    assert options["retrieval_identity_strategy"] == "relationship_element_id_metadata_v1_keyword_no_semantic_text_v1"
+    assert options["retrieval"]["mode"] == "dense"
 
 
 def test_embedding_cache_identity_prefers_current_dotenv_file(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -152,6 +161,21 @@ def test_cache_key_differs_by_embedding_provider(tmp_path) -> None:
     sapbert_key = cache.key_for("genes involved in chemoresistance", 5, options=sapbert_options)
 
     assert openai_key != sapbert_key
+
+
+def test_cache_key_differs_by_retrieval_mode(tmp_path) -> None:
+    cache = PathSearchCache(tmp_path / "path_search_cache.json")
+    dense_options = {
+        "retrieval": RetrievalConfig(mode="dense").to_cache_dict(),
+    }
+    hybrid_options = {
+        "retrieval": RetrievalConfig(mode="hybrid").to_cache_dict(),
+    }
+
+    dense_key = cache.key_for("genes involved in chemoresistance", 5, options=dense_options)
+    hybrid_key = cache.key_for("genes involved in chemoresistance", 5, options=hybrid_options)
+
+    assert dense_key != hybrid_key
 
 
 def test_path_search_service_returns_cache_hit_without_live_search(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

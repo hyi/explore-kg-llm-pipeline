@@ -45,6 +45,8 @@ from explorer.frontend.state import (
     session_from_store,
 )
 
+CONNECTED_EXPANSION_LIMIT = 12
+
 
 def register_callbacks(app: Dash) -> None:
     app.clientside_callback(
@@ -94,7 +96,7 @@ def register_callbacks(app: Dash) -> None:
                 semantic_fetch_k=semantic_fetch_k,
                 paths_per_hit=PATHS_PER_SEMANTIC_HIT,
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - surface any search failure in the Dash UI.
             details = traceback.format_exc()
             return (
                 no_update,
@@ -104,7 +106,7 @@ def register_callbacks(app: Dash) -> None:
                 status([html.Div(f"Search failed: {exc}"), html.Pre(details)], "error"),
             )
 
-        path_dicts = search_result.paths
+        path_dicts = [dict(path, source_query=query) for path in search_result.paths]
         session.add_search(query, len(path_dicts))
         selected_path_id = path_dicts[0]["id"] if path_dicts else None
         cache_label = " from cache" if search_result.cache_hit else ""
@@ -144,12 +146,14 @@ def register_callbacks(app: Dash) -> None:
         Input("selected-path-id-store", "data"),
         State("candidate-paths-store", "data"),
         State("context-store", "data"),
+        State("query-input", "value"),
         prevent_initial_call=True,
     )
     def ensure_context_for_selected_path(
         selected_path_id: str | None,
         paths: list[dict[str, Any]] | None,
         context_store: dict[str, Any] | None,
+        current_query: str | None,
     ) -> dict[str, Any]:
         if not selected_path_id:
             raise PreventUpdate
@@ -176,6 +180,8 @@ def register_callbacks(app: Dash) -> None:
             "hidden_ids": [],
             "positions": initial_positions(subgraph["nodes"], subgraph["edges"]),
             "selected_node_id": None,
+            "active_query": path.get("source_query") or (current_query or "").strip(),
+            "connected_expansion_limit": CONNECTED_EXPANSION_LIMIT,
             "graph_revision": 0,
             "zoom": 1,
             "pan": {"x": 0, "y": 0},
@@ -234,6 +240,12 @@ def register_callbacks(app: Dash) -> None:
         State("context-store", "data"),
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "elements"),
+        State("query-input", "value"),
+        State("expansion-query-input", "value"),
+        State("expansion-direction-dropdown", "value"),
+        State("expansion-limit-input", "value"),
+        State("expansion-category-filter-input", "value"),
+        State("expansion-predicate-filter-input", "value"),
         prevent_initial_call=True,
     )
     def update_context_graph(
@@ -245,6 +257,12 @@ def register_callbacks(app: Dash) -> None:
         context_store: dict[str, Any] | None,
         selected_node_data_values: list[list[dict[str, Any]] | None] | None,
         elements_values: list[list[dict[str, Any]] | None] | None,
+        current_query: str | None,
+        expansion_query: str | None,
+        expansion_direction: str | None,
+        expansion_limit: float | str | None,
+        expansion_categories: str | None,
+        expansion_predicates: str | None,
     ) -> tuple[dict[str, Any], Any]:
         action = ctx.triggered_id
         if not action or not selected_path_id:
@@ -283,9 +301,32 @@ def register_callbacks(app: Dash) -> None:
                     context["hidden_ids"] = [hidden_id for hidden_id in context["hidden_ids"] if hidden_id != node_id]
                     context.pop("node_message", None)
                     context.pop("node_message_node_id", None)
-                    context["base_subgraph"] = graph.context_subgraph(context["focus_ids"])
+                    active_query = (
+                        expansion_query
+                        or context.get("active_query")
+                        or path.get("source_query")
+                        or current_query
+                        or ""
+                    ).strip()
+                    limit = _bounded_expansion_limit(expansion_limit)
+                    categories = _parse_comma_separated(expansion_categories)
+                    predicates = _parse_comma_separated(expansion_predicates)
+                    context["active_query"] = active_query
+                    context["expansion_query"] = active_query
+                    context["connected_expansion_limit"] = limit
+                    context["expansion_direction"] = expansion_direction or "either"
+                    context["expansion_categories"] = categories
+                    context["expansion_predicates"] = predicates
+                    context["base_subgraph"] = graph.context_subgraph(
+                        context["focus_ids"],
+                        query=active_query,
+                        limit_per_focus=limit,
+                        node_categories=categories,
+                        predicates=predicates,
+                        direction=expansion_direction or "either",
+                    )
                     seed_new_positions(context, node_id)
-                    message = "Expanded connected neighbors."
+                    message = f"Expanded top {limit} connected neighbors per focus node."
                 elif action == "expand-similar-button":
                     context["semantic_subgraphs"][node_id] = graph.semantic_similar_nodes(node_id)
                     if node_id not in context["focus_ids"]:
@@ -299,7 +340,18 @@ def register_callbacks(app: Dash) -> None:
                     context["semantic_subgraphs"].pop(node_id, None)
                     if node_id not in path_node_ids:
                         context["focus_ids"] = [focus_id for focus_id in context["focus_ids"] if focus_id != node_id]
-                        context["base_subgraph"] = graph.context_subgraph(context["focus_ids"])
+                        active_query = (context.get("active_query") or path.get("source_query") or current_query or "").strip()
+                        if active_query:
+                            context["base_subgraph"] = graph.context_subgraph(
+                                context["focus_ids"],
+                                query=active_query,
+                                limit_per_focus=int(context.get("connected_expansion_limit") or CONNECTED_EXPANSION_LIMIT),
+                                node_categories=context.get("expansion_categories") or [],
+                                predicates=context.get("expansion_predicates") or [],
+                                direction=context.get("expansion_direction") or "either",
+                            )
+                        else:
+                            context["base_subgraph"] = graph.context_subgraph(context["focus_ids"])
                     context["hidden_ids"] = [hidden_id for hidden_id in context["hidden_ids"] if hidden_id != node_id]
                     context.pop("node_message", None)
                     context.pop("node_message_node_id", None)
@@ -308,7 +360,7 @@ def register_callbacks(app: Dash) -> None:
                     raise PreventUpdate
             finally:
                 graph.close()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - graph adapter errors should become UI status.
             return no_update, status(f"Graph update failed: {exc}", "error")
 
         context_store = deepcopy(context_store or {})
@@ -447,6 +499,20 @@ def _active_selected_node_id(
         if node_id:
             return node_id
     return None
+
+
+def _parse_comma_separated(value: str | None) -> list[str]:
+    return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def _bounded_expansion_limit(value: float | str | None) -> int:
+    if value in (None, ""):
+        return CONNECTED_EXPANSION_LIMIT
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return CONNECTED_EXPANSION_LIMIT
+    return max(1, min(parsed, 50))
 
 
 def _active_elements(

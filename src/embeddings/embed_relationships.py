@@ -15,7 +15,6 @@ from src.embeddings.embedding_utils import (
     get_embedding_dimensions,
     get_embedding_index_suffix,
     get_embedding_property,
-    print_search_result,
 )
 
 SEMANTIC_TEXT_CYPHER_PATH = (
@@ -61,7 +60,7 @@ def relationship_similarity_search(query, k=5, model: str | None = None):
         store = store_info["store"]
         hits = store.similarity_search_with_score(query, k=k)
         for doc, score in hits:
-            doc.metadata["predicate"] = rel_type
+            doc.metadata["predicate"] = doc.metadata.get("predicate") or rel_type
             doc.metadata["score"] = score
             doc.metadata["retrieval_model"] = model or "configured"
             doc.metadata["retrieval_embedding_property"] = embedding_property
@@ -82,8 +81,10 @@ def _relationship_stores(model: str | None = None):
     rel_stores = {}
     available_indexes = _relationship_vector_indexes_by_type()
     embedding_client = get_embedding_client(model)
+    embedding_property = get_embedding_property(model)
+    retrieval_query = _relationship_retrieval_query(embedding_property)
 
-    for rel_type in RELATIONSHIP_TYPES:
+    for rel_type in sorted(available_indexes):
         for index_name in _relationship_index_candidates(
             rel_type,
             available_indexes,
@@ -98,6 +99,7 @@ def _relationship_stores(model: str | None = None):
                         password=NEO4J_PASSWORD,
                         index_name=index_name,
                         text_node_property="semantic_text",
+                        retrieval_query=retrieval_query,
                     ),
                     "index_name": index_name,
                 }
@@ -107,6 +109,36 @@ def _relationship_stores(model: str | None = None):
                     raise
 
     return rel_stores
+
+
+def _relationship_retrieval_query(embedding_property: str) -> str:
+    escaped_embedding_property = cypher_escape_identifier(embedding_property)
+    return f"""
+    RETURN relationship.semantic_text AS text, score,
+           relationship {{
+             .*,
+             semantic_text: Null,
+             `{escaped_embedding_property}`: Null,
+             id: coalesce(relationship.id, elementId(relationship)),
+             relationship_id: coalesce(relationship.id, elementId(relationship)),
+             element_id: elementId(relationship),
+             relationship_element_id: elementId(relationship),
+             predicate: type(relationship),
+             original_subject: coalesce(startNode(relationship).id, startNode(relationship).name, elementId(startNode(relationship))),
+             original_object: coalesce(endNode(relationship).id, endNode(relationship).name, elementId(endNode(relationship))),
+             subject: coalesce(startNode(relationship).id, startNode(relationship).name, elementId(startNode(relationship))),
+             object: coalesce(endNode(relationship).id, endNode(relationship).name, elementId(endNode(relationship))),
+             subject_name: coalesce(startNode(relationship).name, startNode(relationship).id, elementId(startNode(relationship))),
+             object_name: coalesce(endNode(relationship).name, endNode(relationship).id, elementId(endNode(relationship))),
+             subject_labels: labels(startNode(relationship)),
+             object_labels: labels(endNode(relationship)),
+             publication_id: CASE
+               WHEN relationship.publications IS NOT NULL AND size(relationship.publications) > 0 THEN relationship.publications[0]
+               WHEN relationship.llm_abstract_id IS NOT NULL THEN toString(relationship.llm_abstract_id)
+               ELSE relationship.abstract_title
+             END
+           }} AS metadata
+    """
 
 
 def _relationship_similarity_search_scan(query, k=5, model: str | None = None):
@@ -124,15 +156,13 @@ def _relationship_similarity_search_scan(query, k=5, model: str | None = None):
             rows = session.run(
                 f"""
                 MATCH ()-[r]->()
-                WHERE type(r) IN $relationship_types
-                  AND r.`{escaped_embedding_property}` IS NOT NULL
+                WHERE r.`{escaped_embedding_property}` IS NOT NULL
                   AND r.semantic_text IS NOT NULL
                 RETURN type(r) AS predicate,
                        r {{ .* }} AS metadata,
                        r.semantic_text AS text,
                        r.`{escaped_embedding_property}` AS embedding
-                """,
-                relationship_types=RELATIONSHIP_TYPES,
+                """
             )
             results = []
             for row in rows:
@@ -182,7 +212,7 @@ def _relationship_vector_indexes_by_type():
                 for rel_type in row["labelsOrTypes"]:
                     indexes.setdefault(rel_type, []).append(row["name"])
             return indexes
-    except Exception:
+    except Exception:  # noqa: BLE001 - absence/misconfiguration of optional vector indexes triggers scan fallback.
         return {}
     finally:
         driver.close()
@@ -273,9 +303,6 @@ def embed_relationships():
         for record in results:
             rid = record["rid"]
             text = record["text"]
-            rel_type = record["rel_type"]
-            if rel_type not in RELATIONSHIP_TYPES:
-                continue
             vector = embedding_client.embed_query(text)
 
             session.run(
@@ -289,7 +316,7 @@ def embed_relationships():
             )
 
         rel_index_list = []
-        for rel_type in RELATIONSHIP_TYPES:
+        for rel_type in _relationship_types_with_semantic_text(session):
             # create relationship vector index
             index_name = _relationship_index_name(rel_type)
             escaped_index_name = cypher_escape_identifier(index_name)
@@ -310,9 +337,21 @@ def embed_relationships():
 
         print("Relationship embeddings created")
 
-        query = "drug resistance in cancer"
-        search_results = relationship_similarity_search(query)
-        print_search_result(search_results)
+        # query = "drug resistance in cancer"
+        # search_results = relationship_similarity_search(query)
+        # print_search_result(search_results)
+
+
+def _relationship_types_with_semantic_text(session) -> list[str]:
+    rows = session.run(
+        """
+        MATCH ()-[r]->()
+        WHERE r.semantic_text IS NOT NULL
+        RETURN DISTINCT type(r) AS rel_type
+        ORDER BY rel_type
+        """
+    )
+    return [row["rel_type"] for row in rows]
 
 if __name__ == "__main__":
     embed_relationships()

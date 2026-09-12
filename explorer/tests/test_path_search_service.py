@@ -58,7 +58,6 @@ def test_path_search_discovers_all_selected_anchors_before_final_truncation(
     class FakeSemanticSearchService:
         def __init__(self, **kwargs) -> None:
             requested_models.append(kwargs.get("model"))
-            return None
 
         def search(self, query: str, relationship_k: int):
             assert relationship_k == 2

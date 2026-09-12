@@ -4,7 +4,7 @@ import math
 from copy import deepcopy
 from typing import Any
 
-from dash import html
+from dash import dcc, html
 
 from explorer.frontend.constants import NODE_LABEL_MAX_LENGTH
 
@@ -193,6 +193,70 @@ def node_action_panel(
     ]
     if node_message:
         children.append(html.Div(node_message, className="node-inline-message"))
+    children.append(
+        html.Div(
+            [
+                html.Label("Expansion query", htmlFor="expansion-query-input"),
+                dcc.Input(
+                    id="expansion-query-input",
+                    type="text",
+                    value=context.get("expansion_query") or context.get("active_query") or "",
+                    placeholder="Optional refined query for connected neighbors",
+                    debounce=True,
+                    className="expansion-input",
+                ),
+                html.Div(
+                    [
+                        html.Label("Direction", htmlFor="expansion-direction-dropdown"),
+                        dcc.Dropdown(
+                            id="expansion-direction-dropdown",
+                            options=[
+                                {"label": "Either", "value": "either"},
+                                {"label": "Outgoing", "value": "outgoing"},
+                                {"label": "Incoming", "value": "incoming"},
+                            ],
+                            value=context.get("expansion_direction") or "either",
+                            clearable=False,
+                            className="expansion-select",
+                        ),
+                        html.Label("Limit", htmlFor="expansion-limit-input"),
+                        dcc.Input(
+                            id="expansion-limit-input",
+                            type="number",
+                            min=1,
+                            max=50,
+                            step=1,
+                            value=int(context.get("connected_expansion_limit") or 12),
+                            className="expansion-number",
+                        ),
+                    ],
+                    className="expansion-control-row",
+                ),
+                html.Div(
+                    [
+                        dcc.Input(
+                            id="expansion-category-filter-input",
+                            type="text",
+                            value=", ".join(context.get("expansion_categories", [])),
+                            placeholder="Neighbor categories, comma-separated",
+                            debounce=True,
+                            className="expansion-input",
+                        ),
+                        dcc.Input(
+                            id="expansion-predicate-filter-input",
+                            type="text",
+                            value=", ".join(context.get("expansion_predicates", [])),
+                            placeholder="Predicates, comma-separated",
+                            debounce=True,
+                            className="expansion-input",
+                        ),
+                    ],
+                    className="expansion-control-row",
+                ),
+            ],
+            className="expansion-controls",
+        )
+    )
     children.append(
             html.Div(
                 [

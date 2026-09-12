@@ -325,6 +325,37 @@ th {
   gap: 14px;
 }
 
+.expansion-controls {
+  display: grid;
+  flex: 1 1 420px;
+  gap: 8px;
+  min-width: 280px;
+}
+
+.expansion-control-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.expansion-control-row label {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.expansion-input,
+.expansion-select .Select-control {
+  min-height: 36px;
+}
+
+.expansion-input,
+.expansion-number {
+  width: 100%;
+}
+
 .node-inline-message {
   border-radius: 999px;
   background: rgba(216, 160, 61, 0.16);

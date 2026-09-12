@@ -11,6 +11,10 @@ from explorer.backend.semantic_search.ranking import (
     relationship_identity,
     rerank_relationships_with_diagnostics,
 )
+from explorer.backend.semantic_search.retrieval import (
+    RetrievalConfig,
+    retrieve_relationship_candidates,
+)
 from src.embeddings.embed_relationships import relationship_similarity_search
 
 
@@ -25,13 +29,17 @@ class SemanticSearchService:
         self,
         config: AnchorRankingConfig | None = None,
         relationship_retriever: Callable[..., list[Any]] = relationship_similarity_search,
+        keyword_retriever: Callable[..., list[Any]] | None = None,
         metadata_enricher: Callable[[list[Any]], list[Any]] | None = None,
         model: str | None = None,
+        retrieval_config: RetrievalConfig | None = None,
     ) -> None:
         self.config = config or AnchorRankingConfig()
         self.relationship_retriever = relationship_retriever
+        self.keyword_retriever = keyword_retriever
         self.metadata_enricher = metadata_enricher
         self.model = model
+        self.retrieval_config = retrieval_config or RetrievalConfig()
 
     def search(
         self,
@@ -43,7 +51,15 @@ class SemanticSearchService:
     ) -> SemanticSearchResult:
         if not include_nodes:
             raw_k = candidate_pool_size(relationship_k, self.config)
-            candidates = self.relationship_retriever(query, k=raw_k, model=self.model) if raw_k else []
+            retrieval_result = retrieve_relationship_candidates(
+                query,
+                k=raw_k,
+                dense_retriever=self.relationship_retriever,
+                keyword_retriever=self.keyword_retriever,
+                model=self.model,
+                config=self.retrieval_config,
+            )
+            candidates = retrieval_result.candidates
             if self.metadata_enricher:
                 candidates = self.metadata_enricher(candidates)
             ranking_result = rerank_relationships_with_diagnostics(
@@ -60,6 +76,7 @@ class SemanticSearchService:
                 "requested_relationship_k": relationship_k,
                 "raw_candidate_k": raw_k,
                 "retrieval_model": self.model or "configured",
+                "retrieval": retrieval_result.diagnostics,
                 "query_hints": ranking_result.diagnostics["query_hints"],
                 "raw_candidates": raw_candidate_diagnostics,
                 "raw_semantic_candidates": raw_candidate_diagnostics,

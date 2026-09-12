@@ -111,8 +111,20 @@ BIOLOGICAL_PROCESS_CATEGORY_LABELS = frozenset(
     }
 )
 DRUG_CONTEXT_TERMS = frozenset(
-    "drug treatment therapy therapeutic chemotherapy chemotherapeutic chemoresistance "
-    "resistance resistant sensitivity sensitive response".split()
+    [
+        "drug",
+        "treatment",
+        "therapy",
+        "therapeutic",
+        "chemotherapy",
+        "chemotherapeutic",
+        "chemoresistance",
+        "resistance",
+        "resistant",
+        "sensitivity",
+        "sensitive",
+        "response",
+    ]
 )
 RESISTANCE_RESPONSE_CONTEXT_TERMS = frozenset(
     {"chemoresistance", "chemoresistant", "resistance", "resistant", "sensitivity", "sensitive"}
@@ -318,6 +330,13 @@ def _ranking_candidate_diagnostic(
             },
         },
         "publication_id": item["publication_id"],
+        "retrieval_score": metadata.get("retrieval_score"),
+        "fusion_score": metadata.get("fusion_score"),
+        "retrieval_channels": metadata.get("retrieval_channels"),
+        "dense_rank": metadata.get("dense_rank"),
+        "dense_score": metadata.get("dense_score"),
+        "keyword_rank": metadata.get("keyword_rank"),
+        "keyword_score": metadata.get("keyword_score"),
         "retrieval_model": metadata.get("retrieval_model"),
         "retrieval_method": metadata.get("retrieval_method"),
         "retrieval_index_name": metadata.get("retrieval_index_name"),
@@ -385,6 +404,13 @@ def compact_anchor_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "anchor_score",
         "semantic_score",
+        "retrieval_score",
+        "fusion_score",
+        "retrieval_channels",
+        "dense_rank",
+        "dense_score",
+        "keyword_rank",
+        "keyword_score",
         "ranking_reasons",
         "ranking_components",
         "is_semantic_fallback",
@@ -400,9 +426,15 @@ def compact_anchor_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
 
 def _score_candidate(query: str, candidate: Any, raw_rank: int, hints: QueryHints) -> dict[str, Any]:
     raw_metadata = dict(getattr(candidate, "metadata", {}) or {})
-    semantic_score = float(raw_metadata.get("semantic_score", raw_metadata.get("score", 0.0)) or 0.0)
-    components: dict[str, float] = {"semantic": semantic_score * SEMANTIC_SCORE_WEIGHT}
-    reasons = [f"semantic score {semantic_score:.4f}"]
+    if "retrieval_score" in raw_metadata:
+        semantic_score = float(raw_metadata.get("semantic_score", raw_metadata.get("dense_score", 0.0)) or 0.0)
+        retrieval_score = float(raw_metadata.get("retrieval_score", 0.0) or 0.0)
+        components: dict[str, float] = {"retrieval": retrieval_score * SEMANTIC_SCORE_WEIGHT}
+        reasons = [f"retrieval score {retrieval_score:.4f}"]
+    else:
+        semantic_score = float(raw_metadata.get("semantic_score", raw_metadata.get("score", 0.0)) or 0.0)
+        components = {"semantic": semantic_score * SEMANTIC_SCORE_WEIGHT}
+        reasons = [f"semantic score {semantic_score:.4f}"]
     positive_hint_match = False
 
     if hints.wants_gene:
