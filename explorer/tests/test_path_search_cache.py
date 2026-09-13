@@ -126,7 +126,7 @@ def test_path_search_cache_options_include_embedding_identity(tmp_path) -> None:
     assert options["embedding_model"]
     assert options["embedding_property"] in {"embedding", "sapbert_embedding"}
     assert options["embedding_dimensions"] in {768, 1536}
-    assert options["retrieval_identity_strategy"] == "relationship_element_id_metadata_v1_keyword_no_semantic_text_v1"
+    assert options["retrieval_identity_strategy"] == "relationship_element_id_metadata_v1_graph_intent_compatibility_v2"
     assert options["retrieval"]["mode"] == "dense"
 
 

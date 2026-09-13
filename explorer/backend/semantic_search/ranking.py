@@ -2,29 +2,58 @@ from __future__ import annotations
 
 import copy
 import re
-from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from typing import Any
 
-ANCHOR_RANKING_STRATEGY = "dense_query_aware_facets_v2"
+from explorer.backend.semantic_search.query_intent import (
+    CATEGORY_BIOLOGICAL_PROCESS,
+    CATEGORY_DISEASE,
+    CATEGORY_DRUG_OR_CHEMICAL,
+    CATEGORY_GENE,
+    CATEGORY_GENE_PRODUCT,
+    CATEGORY_PHENOTYPE,
+    CATEGORY_SEQUENCE_VARIANT,
+    PREDICATE_DRUG_RESPONSE,
+    PREDICATE_UNKNOWN,
+    QUALITY_BROAD_ASSOCIATION,
+    QUALITY_CONTEXTUAL_MENTION,
+    QUALITY_DIRECT_ASSERTION,
+    QueryIntent,
+    category_families_from_identifier,
+    category_families_from_labels,
+    is_directional_predicate_family,
+    is_symmetric_predicate_family,
+    parse_query_intent,
+    predicate_family,
+    relationship_quality_tier,
+)
+
+ANCHOR_RANKING_STRATEGY = "graph_intent_compatibility_v2"
 
 # Initial transparent heuristics. These weights are intentionally simple and
 # should be evaluated against LitCoin retrieval examples before being treated
 # as empirically validated.
 SEMANTIC_SCORE_WEIGHT = 1.0
-GENE_ENDPOINT_LABEL_BOOST = 0.20
-GENE_PRODUCT_ENDPOINT_LABEL_BOOST = 0.18
-GENOMIC_VARIANT_ENDPOINT_LABEL_BOOST = 0.16
-GENOMIC_VARIANT_PARTIAL_GENE_BOOST = 0.06
-GENE_ENDPOINT_LEXICAL_FALLBACK_BOOST = 0.08
-EXPLICIT_RESPONSE_PREDICATE_BOOST = 0.30
-BROAD_RESPONSE_PREDICATE_BOOST = 0.10
-RESISTANCE_RESPONSE_TEXT_BOOST = 0.10
-CANCER_CONTEXT_BOOST = 0.10
-QUERY_TEXT_OVERLAP_MAX_BOOST = 0.04
-MISSING_GENE_HINT_PENALTY = -0.05
-MISSING_RESPONSE_HINT_PENALTY = -0.08
-MISSING_CANCER_HINT_PENALTY = -0.04
+MAX_COMPATIBILITY_ADJUSTMENT = 0.25
+ENDPOINT_CATEGORY_MATCH = 0.08
+ENDPOINT_CATEGORY_PARTIAL_MATCH = 0.04
+PREDICATE_FAMILY_MATCH = 0.08
+PREDICATE_FAMILY_PARTIAL_MATCH = 0.04
+ROLE_MATCH = 0.04
+ROLE_REVERSED_COMPATIBLE = 0.02
+CONJUNCTIVE_MATCH_BONUS = 0.05
+INCOMPATIBILITY_PENALTY = -0.20
+DIRECT_ASSERTION_QUALITY_ADJUSTMENT = 0.03
+BROAD_ASSOCIATION_QUALITY_ADJUSTMENT = 0.0
+CONTEXTUAL_MENTION_QUALITY_ADJUSTMENT = -0.08
+UNKNOWN_QUALITY_ADJUSTMENT = 0.0
+STRUCTURAL_COMPATIBILITY_TIER_ORDER = {
+    "complete_match": 0,
+    "partial_match": 1,
+    "retrieval_only": 2,
+    "contextual_mention": 3,
+    "no_structural_intent": 0,
+}
 
 GENE_HINT_TERMS = frozenset({"gene", "genes", "genetic"})
 GENETIC_VARIANT_HINT_TERMS = frozenset(
@@ -133,6 +162,22 @@ GENERIC_RESPONSE_TERMS = frozenset({"response", "responsive"})
 THERAPEUTIC_CONTEXT_TERMS = frozenset(
     {"drug", "drugs", "treatment", "treatments", "therapy", "therapies", "therapeutic", "chemotherapy", "chemotherapeutic"}
 )
+DRUG_RESPONSE_EVIDENCE_TERMS = frozenset(
+    {
+        "chemoresistance",
+        "chemoresistant",
+        "efficacy",
+        "resistance",
+        "resistant",
+        "response",
+        "responsive",
+        "sensitivity",
+        "sensitive",
+    }
+) | THERAPEUTIC_CONTEXT_TERMS
+DRUG_RESPONSE_GENETIC_CATEGORIES = frozenset({CATEGORY_GENE, CATEGORY_GENE_PRODUCT, CATEGORY_SEQUENCE_VARIANT})
+DRUG_RESPONSE_RESPONSE_BEARING_CATEGORIES = frozenset({CATEGORY_PHENOTYPE, CATEGORY_BIOLOGICAL_PROCESS})
+DRUG_RESPONSE_DISEASE_CONTEXT_CATEGORIES = frozenset({CATEGORY_DISEASE})
 CANCER_CONTEXT_TERMS = CANCER_HINT_TERMS | frozenset(
     {
         "oncology",
@@ -172,25 +217,14 @@ STOPWORDS = frozenset(
 
 
 @dataclass(frozen=True)
-class QueryHints:
-    wants_gene: bool = False
-    wants_genetic_variant: bool = False
-    wants_resistance_or_response: bool = False
-    wants_cancer: bool = False
-
-    @property
-    def has_active_hint(self) -> bool:
-        return self.wants_gene or self.wants_genetic_variant or self.wants_resistance_or_response or self.wants_cancer
-
-
-@dataclass(frozen=True)
 class AnchorRankingConfig:
     candidate_multiplier: int = 5
     minimum_candidate_pool: int = 25
     maximum_candidate_pool: int = 100
     max_per_publication: int = 2
+    compatibility_profile: str = "generic_graph_intent_v1"
 
-    def to_cache_dict(self) -> dict[str, int]:
+    def to_cache_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
@@ -198,17 +232,6 @@ class AnchorRankingConfig:
 class AnchorRankingResult:
     relationships: list[Any]
     diagnostics: dict[str, Any]
-
-
-def parse_query_hints(query: str) -> QueryHints:
-    tokens = set(_tokens(query))
-    wants_genetic_variant = bool(tokens & GENETIC_VARIANT_HINT_TERMS)
-    return QueryHints(
-        wants_gene=bool(tokens & GENE_HINT_TERMS) or wants_genetic_variant,
-        wants_genetic_variant=wants_genetic_variant,
-        wants_resistance_or_response=bool(tokens & RESISTANCE_RESPONSE_HINT_TERMS),
-        wants_cancer=bool(tokens & CANCER_HINT_TERMS),
-    )
 
 
 def candidate_pool_size(requested_k: int, config: AnchorRankingConfig) -> int:
@@ -241,13 +264,13 @@ def rerank_relationships_with_diagnostics(
     config: AnchorRankingConfig | None = None,
 ) -> AnchorRankingResult:
     config = config or AnchorRankingConfig()
-    hints = parse_query_hints(query)
+    intent = parse_query_intent(query)
     if requested_k <= 0 or not candidates:
         return AnchorRankingResult(
             relationships=[],
             diagnostics={
                 "ranking_strategy": ANCHOR_RANKING_STRATEGY,
-                "query_hints": asdict(hints),
+                "query_intent": intent.to_dict(),
                 "requested_k": requested_k,
                 "candidate_count": len(candidates),
                 "ranked_candidates": [],
@@ -256,7 +279,13 @@ def rerank_relationships_with_diagnostics(
         )
 
     scored = [
-        _score_candidate(query=query, candidate=candidate, raw_rank=rank, hints=hints)
+        _score_candidate(
+            query=query,
+            candidate=candidate,
+            raw_rank=rank,
+            candidate_count=len(candidates),
+            intent=intent,
+        )
         for rank, candidate in enumerate(candidates)
     ]
     scored.sort(key=_rank_sort_key)
@@ -267,12 +296,12 @@ def rerank_relationships_with_diagnostics(
         scored,
         requested_k=requested_k,
         config=config,
-        hints=hints,
+        intent=intent,
     )
     ranked_candidates = [
         _ranking_candidate_diagnostic(
             item,
-            hints=hints,
+            intent=intent,
             selection_status=selection_status.get(item["raw_rank"], {}),
         )
         for item in scored
@@ -280,7 +309,7 @@ def rerank_relationships_with_diagnostics(
     selected_anchors = [
         _ranking_candidate_diagnostic(
             item,
-            hints=hints,
+            intent=intent,
             selection_status=selection_status.get(item["raw_rank"], {}),
         )
         for item in selected
@@ -289,7 +318,7 @@ def rerank_relationships_with_diagnostics(
         relationships=[item["candidate"] for item in selected],
         diagnostics={
             "ranking_strategy": ANCHOR_RANKING_STRATEGY,
-            "query_hints": asdict(hints),
+            "query_intent": intent.to_dict(),
             "requested_k": requested_k,
             "candidate_count": len(candidates),
             "ranked_candidates": ranked_candidates,
@@ -300,7 +329,7 @@ def rerank_relationships_with_diagnostics(
 
 def _ranking_candidate_diagnostic(
     item: dict[str, Any],
-    hints: QueryHints,
+    intent: QueryIntent,
     selection_status: dict[str, Any],
 ) -> dict[str, Any]:
     metadata = item["metadata"]
@@ -315,18 +344,32 @@ def _ranking_candidate_diagnostic(
         "anchor_score": float(metadata.get("anchor_score", 0.0) or 0.0),
         "ranking_components": dict(metadata.get("ranking_components", {}) or {}),
         "ranking_reasons": list(metadata.get("ranking_reasons", []) or []),
-        "query_hints": asdict(hints),
-        "matched_query_facets": _matched_query_facets(metadata, hints),
+        "query_intent": intent.to_dict(),
+        "recognized_query_expressions": [item.to_dict() for item in intent.recognized_expressions],
+        "unrecognized_query_terms": list(intent.unrecognized_terms),
+        "content_terms": list(intent.content_terms),
+        "compatibility_components": dict(metadata.get("compatibility_components", {}) or {}),
+        "endpoint_category_compatibility": dict(metadata.get("endpoint_category_compatibility", {}) or {}),
+        "predicate_family_compatibility": dict(metadata.get("predicate_family_compatibility", {}) or {}),
+        "role_compatibility": dict(metadata.get("role_compatibility", {}) or {}),
+        "relationship_quality_tier": metadata.get("relationship_quality_tier"),
+        "conjunctive_compatibility": metadata.get("conjunctive_compatibility"),
+        "incompatibility_penalties": list(metadata.get("incompatibility_penalties", []) or []),
+        "claim_term_matches": list(metadata.get("claim_term_matches", []) or []),
+        "structural_compatibility_status": metadata.get("structural_compatibility_status"),
+        "fallback_status": metadata.get("fallback_status"),
+        "compatibility_tier_rank": metadata.get("compatibility_tier_rank"),
         "is_semantic_fallback": bool(metadata.get("is_semantic_fallback", False)),
         "predicate": metadata.get("predicate"),
+        "predicate_family": metadata.get("predicate_family"),
         "endpoint_categories": {
             "subject": {
                 "labels": subject_labels,
-                "tier": _endpoint_category_tier(subject_labels),
+                "families": sorted(_endpoint_categories(metadata, "subject")),
             },
             "object": {
                 "labels": object_labels,
-                "tier": _endpoint_category_tier(object_labels),
+                "families": sorted(_endpoint_categories(metadata, "object")),
             },
         },
         "publication_id": item["publication_id"],
@@ -352,10 +395,12 @@ def _ranking_candidate_diagnostic(
         "selection_pass": selection_status.get("selection_pass"),
         "exclusion_reason": None if selected else selection_status.get("exclusion_reason"),
         "exclusion_pass": None if selected else selection_status.get("exclusion_pass"),
-        "diversity_pass": selection_status.get("selection_pass") == "diversity_pass",
+        "diversity_pass": selection_status.get("selection_pass") == "primary_diversity_pass",
         "fallback_pass": selection_status.get("selection_pass") in {
-            "publication_fallback_pass",
-            "semantic_fallback_pass",
+            "primary_publication_fallback_pass",
+            "primary_relationship_fallback_pass",
+            "contextual_mention_fallback_pass",
+            "contextual_mention_relaxed_fallback_pass",
         },
     }
 
@@ -413,6 +458,18 @@ def compact_anchor_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
         "keyword_score",
         "ranking_reasons",
         "ranking_components",
+        "compatibility_components",
+        "endpoint_category_compatibility",
+        "predicate_family_compatibility",
+        "role_compatibility",
+        "relationship_quality_tier",
+        "predicate_family",
+        "conjunctive_compatibility",
+        "incompatibility_penalties",
+        "claim_term_matches",
+        "structural_compatibility_status",
+        "fallback_status",
+        "compatibility_tier_rank",
         "is_semantic_fallback",
         "publication_id",
         "relationship_identity",
@@ -424,71 +481,68 @@ def compact_anchor_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     return {key: metadata[key] for key in keys if key in metadata}
 
 
-def _score_candidate(query: str, candidate: Any, raw_rank: int, hints: QueryHints) -> dict[str, Any]:
+def _score_candidate(
+    query: str,
+    candidate: Any,
+    raw_rank: int,
+    candidate_count: int,
+    intent: QueryIntent,
+) -> dict[str, Any]:
     raw_metadata = dict(getattr(candidate, "metadata", {}) or {})
-    if "retrieval_score" in raw_metadata:
-        semantic_score = float(raw_metadata.get("semantic_score", raw_metadata.get("dense_score", 0.0)) or 0.0)
-        retrieval_score = float(raw_metadata.get("retrieval_score", 0.0) or 0.0)
-        components: dict[str, float] = {"retrieval": retrieval_score * SEMANTIC_SCORE_WEIGHT}
-        reasons = [f"retrieval score {retrieval_score:.4f}"]
-    else:
-        semantic_score = float(raw_metadata.get("semantic_score", raw_metadata.get("score", 0.0)) or 0.0)
-        components = {"semantic": semantic_score * SEMANTIC_SCORE_WEIGHT}
-        reasons = [f"semantic score {semantic_score:.4f}"]
-    positive_hint_match = False
+    semantic_score = float(raw_metadata.get("semantic_score", raw_metadata.get("dense_score", raw_metadata.get("score", 0.0))) or 0.0)
+    retrieval_score = _normalized_retrieval_score(raw_metadata, raw_rank=raw_rank, candidate_count=candidate_count)
+    compatibility = _candidate_compatibility(
+        metadata=raw_metadata,
+        intent=intent,
+        page_content=getattr(candidate, "page_content", ""),
+    )
+    quality_tier = relationship_quality_tier(raw_metadata.get("predicate"))
+    quality_adjustment = _relationship_quality_adjustment(quality_tier)
+    positive_compatibility = min(
+        MAX_COMPATIBILITY_ADJUSTMENT,
+        compatibility["positive_compatibility"],
+    )
+    incompatibility_penalty = sum(compatibility["incompatibility_penalties"])
+    graph_adjustment = positive_compatibility + incompatibility_penalty + quality_adjustment
+    anchor_score = retrieval_score + graph_adjustment
 
-    if hints.wants_gene:
-        gene_component, gene_reason = _gene_endpoint_component(raw_metadata, hints)
-        components["gene_endpoint"] = gene_component
-        if gene_component > 0:
-            positive_hint_match = True
-            reasons.append(gene_reason)
-        else:
-            components["missing_gene_hint"] = MISSING_GENE_HINT_PENALTY
-            reasons.append("no gene endpoint match")
+    components: dict[str, float] = {
+        "retrieval": retrieval_score,
+        "positive_compatibility_capped": positive_compatibility,
+        "incompatibility_penalty": incompatibility_penalty,
+        "relationship_quality": quality_adjustment,
+        "graph_compatibility_adjustment": graph_adjustment,
+    }
+    reasons = [f"retrieval score {retrieval_score:.4f}"]
+    reasons.extend(compatibility["reasons"])
+    reasons.append(f"relationship quality: {quality_tier}")
 
-    if hints.wants_resistance_or_response:
-        predicate_component, predicate_reason = _predicate_component(raw_metadata)
-        components["predicate"] = predicate_component
-        if predicate_component > 0:
-            positive_hint_match = True
-            reasons.append(predicate_reason)
-        else:
-            components["missing_response_hint"] = MISSING_RESPONSE_HINT_PENALTY
-            reasons.append("no resistance/response predicate match")
-        response_text_component = _resistance_response_text_component(raw_metadata, getattr(candidate, "page_content", ""))
-        if response_text_component:
-            components["resistance_response_context"] = response_text_component
-            positive_hint_match = True
-            reasons.append("resistance/response context text match")
-
-    if hints.wants_cancer:
-        cancer_component, cancer_reason = _cancer_context_component(raw_metadata, getattr(candidate, "page_content", ""))
-        components["cancer_context"] = cancer_component
-        if cancer_component > 0:
-            positive_hint_match = True
-            reasons.append(cancer_reason)
-        else:
-            components["missing_cancer_hint"] = MISSING_CANCER_HINT_PENALTY
-            reasons.append("no cancer context match")
-
-    overlap = _query_text_overlap_component(query, raw_metadata, getattr(candidate, "page_content", ""))
-    if overlap:
-        components["query_text_overlap"] = overlap
-        reasons.append("query/context term overlap")
-
-    anchor_score = sum(components.values())
     metadata = dict(raw_metadata)
     identity = relationship_identity(metadata, fallback=f"raw-rank:{raw_rank}")
     publication_id = publication_identity(metadata)
+    fallback_status = _fallback_status(intent, compatibility, quality_tier)
+    compatibility_tier_rank = _compatibility_tier_rank(fallback_status, structural_intent=intent.has_structural_intent)
     metadata.update(
         {
             "semantic_score": semantic_score,
+            "retrieval_score": retrieval_score,
             "anchor_score": anchor_score,
             "score": anchor_score,
             "ranking_reasons": reasons,
             "ranking_components": components,
-            "is_semantic_fallback": hints.has_active_hint and not positive_hint_match,
+            "compatibility_components": compatibility["components"],
+            "endpoint_category_compatibility": compatibility["endpoint_category_compatibility"],
+            "predicate_family_compatibility": compatibility["predicate_family_compatibility"],
+            "role_compatibility": compatibility["role_compatibility"],
+            "relationship_quality_tier": quality_tier,
+            "predicate_family": predicate_family(metadata.get("predicate")),
+            "conjunctive_compatibility": compatibility["conjunctive_compatibility"],
+            "incompatibility_penalties": compatibility["incompatibility_penalty_reasons"],
+            "claim_term_matches": _claim_term_matches(intent, metadata, getattr(candidate, "page_content", "")),
+            "structural_compatibility_status": compatibility["status"],
+            "fallback_status": fallback_status,
+            "compatibility_tier_rank": compatibility_tier_rank,
+            "is_semantic_fallback": fallback_status in {"partial_match", "retrieval_only", "contextual_mention"},
             "publication_id": publication_id,
             "relationship_identity": identity,
             "raw_rank": raw_rank,
@@ -505,119 +559,504 @@ def _score_candidate(query: str, candidate: Any, raw_rank: int, hints: QueryHint
     }
 
 
-def _gene_endpoint_component(metadata: dict[str, Any], hints: QueryHints) -> tuple[float, str]:
-    subject_labels = _labels(metadata, "subject")
-    object_labels = _labels(metadata, "object")
-    labels_available = bool(subject_labels or object_labels)
-
-    subject_tier = _endpoint_category_tier(subject_labels)
-    object_tier = _endpoint_category_tier(object_labels)
-    matched_tier = _best_gene_compatible_tier(subject_tier, object_tier)
-    if matched_tier == "gene":
-        return GENE_ENDPOINT_LABEL_BOOST, "gene endpoint category match"
-    if matched_tier == "gene product":
-        return GENE_PRODUCT_ENDPOINT_LABEL_BOOST, "gene product endpoint category match"
-    if matched_tier == "genomic variant":
-        if hints.wants_genetic_variant:
-            return GENOMIC_VARIANT_ENDPOINT_LABEL_BOOST, "genomic variant endpoint category match"
-        return GENOMIC_VARIANT_PARTIAL_GENE_BOOST, "genomic variant endpoint partial gene match"
-
-    if labels_available:
-        return 0.0, "no gene endpoint match"
-
-    if _has_gene_lexical_fallback(metadata):
-        return GENE_ENDPOINT_LEXICAL_FALLBACK_BOOST, "gene endpoint lexical fallback"
-
-    return 0.0, "no gene endpoint match"
+def _normalized_retrieval_score(metadata: dict[str, Any], *, raw_rank: int, candidate_count: int) -> float:
+    if "retrieval_score" in metadata:
+        return _clamp01(float(metadata.get("retrieval_score", 0.0) or 0.0))
+    return _clamp01(float(metadata.get("semantic_score", metadata.get("score", 0.0)) or 0.0))
 
 
-def _predicate_component(metadata: dict[str, Any]) -> tuple[float, str]:
-    predicate_text = str(metadata.get("predicate") or "")
-    has_drug_response_context = _has_drug_response_context(metadata)
-    if predicate_text in EXPLICIT_RESPONSE_PREDICATES:
-        if has_drug_response_context:
-            return EXPLICIT_RESPONSE_PREDICATE_BOOST, "drug response predicate context match"
-        return 0.0, "response predicate lacks drug/resistance context"
-    if predicate_text in BROAD_RESPONSE_PREDICATES and has_drug_response_context:
-        return BROAD_RESPONSE_PREDICATE_BOOST, "broad drug response context match"
-    return 0.0, "no resistance/response predicate match"
-
-
-def _resistance_response_text_component(metadata: dict[str, Any], page_content: Any) -> float:
-    edge_tokens = set(_tokens(_edge_specific_text(metadata)))
-    if _has_resistance_response_context_tokens(edge_tokens):
-        return RESISTANCE_RESPONSE_TEXT_BOOST
-
-    context_tokens = set(_tokens(_compact_context_text(metadata, page_content)))
-    if _has_resistance_response_context_tokens(context_tokens):
-        return RESISTANCE_RESPONSE_TEXT_BOOST
-    return 0.0
-
-
-def _has_resistance_response_context_tokens(tokens: set[str]) -> bool:
-    if tokens & RESISTANCE_RESPONSE_CONTEXT_TERMS:
-        return True
-    return bool(tokens & GENERIC_RESPONSE_TERMS) and bool(tokens & THERAPEUTIC_CONTEXT_TERMS)
-
-
-def _cancer_context_component(metadata: dict[str, Any], page_content: Any) -> tuple[float, str]:
-    endpoint_text = " ".join(
-        str(part)
-        for part in (
-            _endpoint_value(metadata, "subject"),
-            _endpoint_value(metadata, "object"),
-            metadata.get("llm_subject_type"),
-            metadata.get("llm_object_type"),
-        )
-        if part
+def _candidate_compatibility(metadata: dict[str, Any], intent: QueryIntent, page_content: Any) -> dict[str, Any]:
+    subject_categories = _endpoint_categories(metadata, "subject")
+    object_categories = _endpoint_categories(metadata, "object")
+    candidate_predicate_family = predicate_family(metadata.get("predicate"))
+    endpoint_result = _endpoint_category_compatibility(intent, subject_categories, object_categories)
+    predicate_result = _predicate_family_compatibility(
+        intent,
+        candidate_predicate_family,
+        metadata=metadata,
+        subject_categories=subject_categories,
+        object_categories=object_categories,
     )
-    endpoint_tokens = set(_tokens(endpoint_text))
-    if endpoint_tokens & CANCER_CONTEXT_TERMS:
-        return CANCER_CONTEXT_BOOST, "cancer endpoint/context match"
+    role_result = _role_compatibility(intent, subject_categories, object_categories, candidate_predicate_family)
+    conjunctive_score = _conjunctive_compatibility(endpoint_result, predicate_result, role_result, intent)
+    penalties = _incompatibility_penalties(endpoint_result, role_result)
+    positive = endpoint_result["score"] + predicate_result["score"] + role_result["score"] + conjunctive_score
+    status = _structural_compatibility_status(intent, endpoint_result, predicate_result, role_result)
+    reasons = []
+    for result in (endpoint_result, predicate_result, role_result):
+        if result["reason"]:
+            reasons.append(result["reason"])
+    if conjunctive_score:
+        reasons.append("candidate-level conjunctive compatibility")
+    reasons.extend(reason for _value, reason in penalties)
+    return {
+        "positive_compatibility": positive,
+        "components": {
+            "endpoint_category": endpoint_result["score"],
+            "predicate_family": predicate_result["score"],
+            "role": role_result["score"],
+            "conjunctive": conjunctive_score,
+        },
+        "endpoint_category_compatibility": endpoint_result,
+        "predicate_family_compatibility": predicate_result,
+        "role_compatibility": role_result,
+        "conjunctive_compatibility": conjunctive_score,
+        "incompatibility_penalties": [value for value, _reason in penalties],
+        "incompatibility_penalty_reasons": [reason for _value, reason in penalties],
+        "status": status,
+        "claim_term_matches": _claim_term_matches(intent, metadata, page_content),
+        "reasons": reasons,
+    }
 
-    context_tokens = set(_tokens(_compact_context_text(metadata, page_content)))
-    if context_tokens & CANCER_CONTEXT_TERMS:
-        return CANCER_CONTEXT_BOOST, "cancer context text match"
-    return 0.0, "no cancer context match"
+
+def _endpoint_category_compatibility(
+    intent: QueryIntent,
+    subject_categories: set[str],
+    object_categories: set[str],
+) -> dict[str, Any]:
+    requested = _all_requested_category_families(intent)
+    if not requested:
+        return {"status": "not_requested", "score": 0.0, "matched": [], "missing": [], "reason": None}
+    endpoint_categories = subject_categories | object_categories
+    matched = sorted(request for request in requested if _category_matches(request, endpoint_categories))
+    partial = sorted(request for request in requested if request not in matched and _category_partially_matches(request, endpoint_categories))
+    missing = sorted(request for request in requested if request not in matched and request not in partial)
+    if matched:
+        return {
+            "status": "match",
+            "score": ENDPOINT_CATEGORY_MATCH,
+            "matched": matched,
+            "partial": partial,
+            "missing": missing,
+            "reason": f"endpoint category match: {', '.join(matched)}",
+        }
+    if partial:
+        return {
+            "status": "partial",
+            "score": ENDPOINT_CATEGORY_PARTIAL_MATCH,
+            "matched": [],
+            "partial": partial,
+            "missing": missing,
+            "reason": f"partial endpoint category match: {', '.join(partial)}",
+        }
+    return {
+        "status": "missing",
+        "score": 0.0,
+        "matched": [],
+        "partial": [],
+        "missing": missing,
+        "reason": "no requested endpoint category match",
+    }
 
 
-def _query_text_overlap_component(query: str, metadata: dict[str, Any], page_content: Any) -> float:
-    query_tokens = [token for token in _tokens(query) if token not in STOPWORDS]
-    if not query_tokens:
+def _predicate_family_compatibility(
+    intent: QueryIntent,
+    candidate_family: str,
+    *,
+    metadata: dict[str, Any],
+    subject_categories: set[str],
+    object_categories: set[str],
+) -> dict[str, Any]:
+    requested = sorted({request.family for request in intent.requested_predicate_families})
+    if not requested:
+        return {
+            "status": "not_requested",
+            "score": 0.0,
+            "requested": [],
+            "candidate": candidate_family,
+            "reason": None,
+        }
+    if candidate_family in requested:
+        if candidate_family == PREDICATE_DRUG_RESPONSE:
+            return _drug_response_predicate_compatibility(
+                requested=requested,
+                metadata=metadata,
+                subject_categories=subject_categories,
+                object_categories=object_categories,
+            )
+        return {
+            "status": "match",
+            "score": PREDICATE_FAMILY_MATCH,
+            "requested": requested,
+            "candidate": candidate_family,
+            "reason": f"predicate family match: {candidate_family}",
+        }
+    if candidate_family == PREDICATE_UNKNOWN:
+        status = "unknown"
+        reason = "predicate family unknown"
+    else:
+        status = "mismatch"
+        reason = f"predicate family mismatch: {candidate_family}"
+    return {
+        "status": status,
+        "score": 0.0,
+        "requested": requested,
+        "candidate": candidate_family,
+        "reason": reason,
+    }
+
+
+def _drug_response_predicate_compatibility(
+    *,
+    requested: list[str],
+    metadata: dict[str, Any],
+    subject_categories: set[str],
+    object_categories: set[str],
+) -> dict[str, Any]:
+    support = _drug_response_argument_support(metadata, subject_categories, object_categories)
+    classification = support["classification"]
+    if classification == "validated":
+        status = "match"
+        score = PREDICATE_FAMILY_MATCH
+        reason = "predicate family match: drug_response with argument support"
+    elif classification == "partial":
+        status = "partial"
+        score = PREDICATE_FAMILY_PARTIAL_MATCH
+        reason = "partial predicate family match: drug_response lacks complete argument support"
+    elif classification == "incompatible":
+        status = "mismatch"
+        score = 0.0
+        reason = "predicate family mismatch: drug_response argument context incompatible"
+    else:
+        status = "unknown"
+        score = 0.0
+        reason = "predicate family unknown: drug_response argument context unavailable"
+    return {
+        "status": status,
+        "score": score,
+        "requested": requested,
+        "candidate": PREDICATE_DRUG_RESPONSE,
+        "reason": reason,
+        "drug_response_argument_compatibility": support,
+    }
+
+
+def _drug_response_argument_support(
+    metadata: dict[str, Any],
+    subject_categories: set[str],
+    object_categories: set[str],
+) -> dict[str, Any]:
+    endpoint_support = _drug_response_endpoint_role_support(subject_categories, object_categories)
+    original_relationship_support = _term_support(
+        _metadata_text(metadata, ("llm_relationship", "original_relationship", "relationship")),
+        DRUG_RESPONSE_EVIDENCE_TERMS,
+    )
+    qualifier_support = _term_support(
+        _metadata_text(
+            metadata,
+            (
+                "llm_subject_qualifier",
+                "llm_object_qualifier",
+                "llm_statement_qualifier",
+                "subject_qualifier",
+                "object_qualifier",
+                "statement_qualifier",
+                "qualifiers",
+            ),
+        ),
+        DRUG_RESPONSE_EVIDENCE_TERMS,
+    )
+    has_claim_evidence = bool(original_relationship_support["matched_terms"] or qualifier_support["matched_terms"])
+
+    if (
+        endpoint_support["status"] == "match"
+        or qualifier_support["matched_terms"]
+        or (original_relationship_support["matched_terms"] and endpoint_support["status"] == "partial")
+    ):
+        classification = "validated"
+    elif endpoint_support["status"] == "incompatible" and not has_claim_evidence:
+        classification = "incompatible"
+    elif endpoint_support["status"] == "unknown" and not has_claim_evidence:
+        classification = "unknown"
+    else:
+        classification = "partial"
+
+    return {
+        "classification": classification,
+        "predicate_family_support": "normalized_biolink_drug_response_predicate",
+        "original_relationship_support": original_relationship_support,
+        "endpoint_role_support": endpoint_support,
+        "qualifier_support": qualifier_support,
+        "final_reason": _drug_response_final_reason(classification, endpoint_support, original_relationship_support, qualifier_support),
+    }
+
+
+def _drug_response_endpoint_role_support(
+    subject_categories: set[str],
+    object_categories: set[str],
+) -> dict[str, Any]:
+    if not subject_categories and not object_categories:
+        return {
+            "status": "unknown",
+            "reason": "endpoint categories unavailable",
+            "subject_categories": [],
+            "object_categories": [],
+        }
+
+    subject_genetic = bool(subject_categories & DRUG_RESPONSE_GENETIC_CATEGORIES)
+    object_genetic = bool(object_categories & DRUG_RESPONSE_GENETIC_CATEGORIES)
+    subject_drug = CATEGORY_DRUG_OR_CHEMICAL in subject_categories
+    object_drug = CATEGORY_DRUG_OR_CHEMICAL in object_categories
+    subject_response_bearing = bool(subject_categories & DRUG_RESPONSE_RESPONSE_BEARING_CATEGORIES)
+    object_response_bearing = bool(object_categories & DRUG_RESPONSE_RESPONSE_BEARING_CATEGORIES)
+    subject_disease = bool(subject_categories & DRUG_RESPONSE_DISEASE_CONTEXT_CATEGORIES)
+    object_disease = bool(object_categories & DRUG_RESPONSE_DISEASE_CONTEXT_CATEGORIES)
+
+    if (subject_genetic and object_drug) or (subject_drug and object_genetic):
+        status = "match"
+        reason = "gene/variant endpoint paired with drug/chemical endpoint"
+    elif (subject_drug and object_response_bearing) or (object_drug and subject_response_bearing):
+        status = "match"
+        reason = "drug/chemical endpoint paired with response-bearing phenotype or process"
+    elif (subject_genetic and (object_response_bearing or object_disease)) or (
+        object_genetic and (subject_response_bearing or subject_disease)
+    ):
+        status = "partial"
+        reason = "gene/variant endpoint paired with disease or phenotype without drug/treatment endpoint"
+    elif (subject_drug and object_disease) or (object_drug and subject_disease):
+        status = "partial"
+        reason = "drug/chemical endpoint paired with disease without explicit response-bearing context"
+    elif subject_categories or object_categories:
+        status = "incompatible"
+        reason = "endpoints do not match documented drug-response argument patterns"
+    else:
+        status = "unknown"
+        reason = "endpoint categories unavailable"
+
+    return {
+        "status": status,
+        "reason": reason,
+        "subject_categories": sorted(subject_categories),
+        "object_categories": sorted(object_categories),
+    }
+
+
+def _drug_response_final_reason(
+    classification: str,
+    endpoint_support: dict[str, Any],
+    original_relationship_support: dict[str, Any],
+    qualifier_support: dict[str, Any],
+) -> str:
+    if classification == "validated":
+        if endpoint_support["status"] == "match":
+            return endpoint_support["reason"]
+        if qualifier_support["matched_terms"]:
+            return "claim qualifier supplies explicit treatment/response evidence"
+        return "original relationship supplies explicit treatment/response evidence"
+    if classification == "partial":
+        return endpoint_support["reason"]
+    if classification == "incompatible":
+        return endpoint_support["reason"]
+    if original_relationship_support["matched_terms"]:
+        return "original relationship has response terms but endpoint context is unavailable"
+    return "drug-response predicate label has insufficient argument evidence"
+
+
+def _role_compatibility(
+    intent: QueryIntent,
+    subject_categories: set[str],
+    object_categories: set[str],
+    candidate_predicate_family: str,
+) -> dict[str, Any]:
+    subject_requests = {request.family for request in intent.requested_subject_categories}
+    object_requests = {request.family for request in intent.requested_object_categories}
+    if not subject_requests and not object_requests:
+        return {"status": "not_requested", "score": 0.0, "reason": None, "matches": []}
+
+    matches = []
+    reversed_matches = []
+    contradictions = []
+    for family in sorted(subject_requests):
+        if _category_matches(family, subject_categories):
+            matches.append(f"subject:{family}")
+        elif _category_matches(family, object_categories):
+            reversed_matches.append(f"subject:{family}")
+    for family in sorted(object_requests):
+        if _category_matches(family, object_categories):
+            matches.append(f"object:{family}")
+        elif _category_matches(family, subject_categories):
+            reversed_matches.append(f"object:{family}")
+
+    if matches:
+        return {
+            "status": "match",
+            "score": ROLE_MATCH,
+            "reason": f"subject/object role match: {', '.join(matches)}",
+            "matches": matches,
+            "reversed_matches": reversed_matches,
+            "contradictions": [],
+        }
+    if reversed_matches and is_symmetric_predicate_family(candidate_predicate_family):
+        return {
+            "status": "symmetric_compatible",
+            "score": ROLE_REVERSED_COMPATIBLE,
+            "reason": f"symmetric role-compatible match: {', '.join(reversed_matches)}",
+            "matches": [],
+            "reversed_matches": reversed_matches,
+            "contradictions": [],
+        }
+    if reversed_matches and is_directional_predicate_family(candidate_predicate_family):
+        contradictions = reversed_matches
+        return {
+            "status": "contradiction",
+            "score": 0.0,
+            "reason": f"clear subject/object role contradiction: {', '.join(contradictions)}",
+            "matches": [],
+            "reversed_matches": reversed_matches,
+            "contradictions": contradictions,
+        }
+    if reversed_matches:
+        return {
+            "status": "unknown_direction",
+            "score": 0.0,
+            "reason": f"role direction unknown for reversed category: {', '.join(reversed_matches)}",
+            "matches": [],
+            "reversed_matches": reversed_matches,
+            "contradictions": [],
+        }
+    return {
+        "status": "unknown",
+        "score": 0.0,
+        "reason": "requested subject/object role not observed",
+        "matches": [],
+        "reversed_matches": [],
+        "contradictions": [],
+    }
+
+
+def _conjunctive_compatibility(
+    endpoint_result: dict[str, Any],
+    predicate_result: dict[str, Any],
+    role_result: dict[str, Any],
+    intent: QueryIntent,
+) -> float:
+    if not intent.has_structural_intent:
         return 0.0
-
-    text_parts = [
-        page_content,
-        metadata.get("semantic_text"),
-        metadata.get("abstract_title"),
-        metadata.get("llm_subject"),
-        metadata.get("llm_object"),
-        metadata.get("llm_relationship"),
-    ]
-    text_tokens = set(_tokens(" ".join(str(part) for part in text_parts if part)))
-    if not text_tokens:
-        return 0.0
-
-    matches = len(set(query_tokens) & text_tokens)
-    if not matches:
-        return 0.0
-    return min(QUERY_TEXT_OVERLAP_MAX_BOOST, QUERY_TEXT_OVERLAP_MAX_BOOST * matches / len(set(query_tokens)))
+    matched_dimensions = 0
+    if endpoint_result["status"] in {"match", "partial"}:
+        matched_dimensions += 1
+    if predicate_result["status"] == "match":
+        matched_dimensions += 1
+    if role_result["status"] in {"match", "symmetric_compatible"}:
+        matched_dimensions += 1
+    return CONJUNCTIVE_MATCH_BONUS if matched_dimensions >= 2 else 0.0
 
 
-def _matched_query_facets(metadata: dict[str, Any], hints: QueryHints) -> list[str]:
-    components = dict(metadata.get("ranking_components", {}) or {})
-    facets: list[str] = []
-    if hints.wants_gene and components.get("gene_endpoint", 0.0) > 0:
-        facets.append("gene_endpoint")
-    if hints.wants_resistance_or_response and components.get("predicate", 0.0) > 0:
-        facets.append("resistance_or_response_predicate")
-    if hints.wants_resistance_or_response and components.get("resistance_response_context", 0.0) > 0:
-        facets.append("resistance_or_response_context")
-    if hints.wants_cancer and components.get("cancer_context", 0.0) > 0:
-        facets.append("cancer_context")
-    if components.get("query_text_overlap", 0.0) > 0:
-        facets.append("query_text_overlap")
-    return facets
+def _incompatibility_penalties(
+    endpoint_result: dict[str, Any],
+    role_result: dict[str, Any],
+) -> list[tuple[float, str]]:
+    penalties = []
+    if endpoint_result["status"] == "missing":
+        penalties.append((INCOMPATIBILITY_PENALTY / 2, "requested endpoint category missing"))
+    if role_result["status"] == "contradiction":
+        penalties.append((INCOMPATIBILITY_PENALTY, role_result["reason"]))
+    return penalties
+
+
+def _structural_compatibility_status(
+    intent: QueryIntent,
+    endpoint_result: dict[str, Any],
+    predicate_result: dict[str, Any],
+    role_result: dict[str, Any],
+) -> str:
+    if not intent.has_structural_intent:
+        return "no_structural_intent"
+    requested_dimensions: list[tuple[bool, bool]] = []
+    if _all_requested_category_families(intent):
+        requested_dimensions.append(
+            (
+                endpoint_result["status"] == "match",
+                endpoint_result["status"] in {"match", "partial"},
+            )
+        )
+    if intent.requested_predicate_families:
+        requested_dimensions.append(
+            (
+                predicate_result["status"] == "match",
+                predicate_result["status"] in {"match", "partial"},
+            )
+        )
+    if intent.requested_subject_categories or intent.requested_object_categories:
+        requested_dimensions.append(
+            (
+                role_result["status"] in {"match", "symmetric_compatible"},
+                role_result["status"] in {"match", "symmetric_compatible"},
+            )
+        )
+    if requested_dimensions and all(complete for complete, _partial in requested_dimensions):
+        return "complete_match"
+    if any(partial for _complete, partial in requested_dimensions):
+        return "partial_match"
+    return "retrieval_only"
+
+
+def _fallback_status(intent: QueryIntent, compatibility: dict[str, Any], quality_tier: str) -> str:
+    if quality_tier == QUALITY_CONTEXTUAL_MENTION:
+        return "contextual_mention"
+    if not intent.has_structural_intent:
+        return "no_structural_intent"
+    return compatibility["status"]
+
+
+def _compatibility_tier_rank(status: str, *, structural_intent: bool) -> int:
+    if not structural_intent:
+        return 0
+    return STRUCTURAL_COMPATIBILITY_TIER_ORDER.get(status, STRUCTURAL_COMPATIBILITY_TIER_ORDER["retrieval_only"])
+
+
+def _relationship_quality_adjustment(quality_tier: str) -> float:
+    if quality_tier == QUALITY_DIRECT_ASSERTION:
+        return DIRECT_ASSERTION_QUALITY_ADJUSTMENT
+    if quality_tier == QUALITY_BROAD_ASSOCIATION:
+        return BROAD_ASSOCIATION_QUALITY_ADJUSTMENT
+    if quality_tier == QUALITY_CONTEXTUAL_MENTION:
+        return CONTEXTUAL_MENTION_QUALITY_ADJUSTMENT
+    return UNKNOWN_QUALITY_ADJUSTMENT
+
+
+def _claim_term_matches(intent: QueryIntent, metadata: dict[str, Any], page_content: Any) -> list[str]:
+    claim_tokens = set(_tokens(_edge_specific_text(metadata) + " " + str(page_content or "")))
+    return sorted(set(intent.content_terms) & claim_tokens)
+
+
+def _all_requested_category_families(intent: QueryIntent) -> set[str]:
+    return {
+        request.family
+        for request in (
+            *intent.requested_subject_categories,
+            *intent.requested_object_categories,
+            *intent.requested_endpoint_categories,
+        )
+    }
+
+
+def _category_matches(requested_family: str, observed_families: set[str]) -> bool:
+    return requested_family in observed_families
+
+
+def _category_partially_matches(requested_family: str, observed_families: set[str]) -> bool:
+    if requested_family == CATEGORY_GENE:
+        return bool(observed_families & {CATEGORY_GENE_PRODUCT})
+    if requested_family == CATEGORY_GENE_PRODUCT:
+        return bool(observed_families & {CATEGORY_GENE})
+    if requested_family == CATEGORY_DRUG_OR_CHEMICAL:
+        return CATEGORY_DRUG_OR_CHEMICAL in observed_families
+    if requested_family == CATEGORY_SEQUENCE_VARIANT:
+        return False
+    return False
+
+
+def _endpoint_categories(metadata: dict[str, Any], endpoint: str) -> set[str]:
+    labels = _labels(metadata, endpoint)
+    families = category_families_from_labels(labels)
+    if families:
+        return families
+    return category_families_from_identifier(_endpoint_value(metadata, endpoint))
+
+
+def _clamp01(value: float) -> float:
+    return max(0.0, min(1.0, value))
 
 
 def _diversified_selection(
@@ -629,7 +1068,7 @@ def _diversified_selection(
         ranked_items,
         requested_k=requested_k,
         config=config,
-        hints=None,
+        intent=None,
     )
     return selected
 
@@ -638,7 +1077,7 @@ def _diversified_selection_with_diagnostics(
     ranked_items: list[dict[str, Any]],
     requested_k: int,
     config: AnchorRankingConfig,
-    hints: QueryHints | None = None,
+    intent: QueryIntent | None = None,
 ) -> tuple[list[dict[str, Any]], dict[int, dict[str, Any]]]:
     selected: list[dict[str, Any]] = []
     selected_identities: set[str] = set()
@@ -689,134 +1128,64 @@ def _diversified_selection_with_diagnostics(
         if all(neighborhood):
             used_neighborhoods.add(neighborhood)
 
-    for item in ranked_items:
+    primary_items = [
+        item
+        for item in ranked_items
+        if item["metadata"].get("relationship_quality_tier") != QUALITY_CONTEXTUAL_MENTION
+    ]
+    contextual_items = [
+        item
+        for item in ranked_items
+        if item["metadata"].get("relationship_quality_tier") == QUALITY_CONTEXTUAL_MENTION
+    ]
+
+    for item in contextual_items:
+        record_exclusion(item, "contextual_mention_suppressed_in_primary_pass", "primary_quality_pass")
+
+    for item in primary_items:
         try_add(
             item,
             enforce_publication=True,
             enforce_neighborhood=True,
-            pass_name="diversity_pass",
+            pass_name="primary_diversity_pass",
         )
-    for item in ranked_items:
+    for item in primary_items:
         try_add(
             item,
             enforce_publication=True,
             enforce_neighborhood=False,
-            pass_name="publication_fallback_pass",
+            pass_name="primary_publication_fallback_pass",
         )
-    for item in ranked_items:
+    for item in primary_items:
         try_add(
             item,
             enforce_publication=False,
             enforce_neighborhood=False,
-            pass_name="semantic_fallback_pass",
+            pass_name="primary_relationship_fallback_pass",
         )
-
-    if hints is not None:
-        _ensure_required_facet_coverage(
-            selected=selected,
-            ranked_items=ranked_items,
-            selection_status=selection_status,
-            hints=hints,
+    for item in contextual_items:
+        try_add(
+            item,
+            enforce_publication=True,
+            enforce_neighborhood=True,
+            pass_name="contextual_mention_fallback_pass",
+        )
+    for item in contextual_items:
+        try_add(
+            item,
+            enforce_publication=False,
+            enforce_neighborhood=False,
+            pass_name="contextual_mention_relaxed_fallback_pass",
         )
 
     return selected, selection_status
 
 
-def _ensure_required_facet_coverage(
-    selected: list[dict[str, Any]],
-    ranked_items: list[dict[str, Any]],
-    selection_status: dict[int, dict[str, Any]],
-    hints: QueryHints,
-) -> None:
-    required_facets = _required_coverage_facets(hints)
-    if not required_facets or not selected:
-        return
-
-    selected_identities = {item["identity"] for item in selected}
-    for required_facet in required_facets:
-        selected_coverage = _coverage_counts(selected, hints)
-        if selected_coverage.get(required_facet, 0) > 0:
-            continue
-
-        replacement = next(
-            (
-                item
-                for item in ranked_items
-                if item["identity"] not in selected_identities
-                and required_facet in _coverage_facets(item["metadata"], hints)
-            ),
-            None,
-        )
-        if replacement is None:
-            continue
-
-        replace_index = _replacement_index_for_facet(selected, hints)
-        removed = selected[replace_index]
-        selected_identities.discard(removed["identity"])
-        selection_status[removed["raw_rank"]] = {
-            "selected": False,
-            "exclusion_reason": "facet_coverage_replacement",
-            "exclusion_pass": "facet_coverage_pass",
-        }
-
-        selected[replace_index] = replacement
-        selected_identities.add(replacement["identity"])
-        selection_status[replacement["raw_rank"]] = {
-            "selected": True,
-            "selection_pass": "facet_coverage_pass",
-        }
-
-
-def _required_coverage_facets(hints: QueryHints) -> list[str]:
-    facets: list[str] = []
-    if hints.wants_gene:
-        facets.append("gene")
-    if hints.wants_resistance_or_response:
-        facets.append("resistance_or_response")
-    if hints.wants_cancer:
-        facets.append("cancer")
-    return facets
-
-
-def _coverage_facets(metadata: dict[str, Any], hints: QueryHints) -> set[str]:
-    components = dict(metadata.get("ranking_components", {}) or {})
-    facets: set[str] = set()
-    if hints.wants_gene and components.get("gene_endpoint", 0.0) > 0:
-        facets.add("gene")
-    if hints.wants_resistance_or_response and (
-        components.get("predicate", 0.0) > 0
-        or components.get("resistance_response_context", 0.0) > 0
-    ):
-        facets.add("resistance_or_response")
-    if hints.wants_cancer and components.get("cancer_context", 0.0) > 0:
-        facets.add("cancer")
-    return facets
-
-
-def _coverage_counts(items: list[dict[str, Any]], hints: QueryHints) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    for item in items:
-        for facet in _coverage_facets(item["metadata"], hints):
-            counts[facet] = counts.get(facet, 0) + 1
-    return counts
-
-
-def _replacement_index_for_facet(
-    selected: list[dict[str, Any]],
-    hints: QueryHints,
-) -> int:
-    coverage_counts = _coverage_counts(selected, hints)
-    for index in range(len(selected) - 1, -1, -1):
-        item_facets = _coverage_facets(selected[index]["metadata"], hints)
-        if all(coverage_counts.get(facet, 0) > 1 for facet in item_facets):
-            return index
-    return len(selected) - 1
-
-
-def _rank_sort_key(item: dict[str, Any]) -> tuple[float, int, str, str, str, str]:
+def _rank_sort_key(item: dict[str, Any]) -> tuple[int, float, int, str, str, str, str]:
     metadata = item["metadata"]
     subject, obj = item["neighborhood"]
     return (
+        int(metadata.get("compatibility_tier_rank", 0)),
         -float(metadata["anchor_score"]),
         int(item["raw_rank"]),
         str(item["identity"]),
@@ -832,64 +1201,6 @@ def _labels(metadata: dict[str, Any], endpoint: str) -> list[str]:
         if isinstance(value, list):
             return [str(item) for item in value]
     return []
-
-
-def _has_gene_like_label(labels: Iterable[str]) -> bool:
-    return bool(_gene_compatible_tier(_endpoint_category_tier(labels)))
-
-
-def _endpoint_category_tier(labels: Iterable[str]) -> str | None:
-    label_set = {str(label) for label in labels}
-    if label_set & GENE_CATEGORY_LABELS:
-        return "gene"
-    if label_set & GENE_PRODUCT_CATEGORY_LABELS:
-        return "gene product"
-    if label_set & GENOMIC_VARIANT_CATEGORY_LABELS:
-        return "genomic variant"
-    if label_set & CHEMICAL_CATEGORY_LABELS:
-        return "chemical"
-    if label_set & BIOLOGICAL_PROCESS_CATEGORY_LABELS:
-        return "biological process"
-    return None
-
-
-def _gene_compatible_tier(tier: str | None) -> str | None:
-    if tier in {"gene", "gene product", "genomic variant"}:
-        return tier
-    return None
-
-
-def _best_gene_compatible_tier(*tiers: str | None) -> str | None:
-    priority = {"gene": 0, "gene product": 1, "genomic variant": 2}
-    compatible = [tier for tier in tiers if tier in priority]
-    if not compatible:
-        return None
-    return min(compatible, key=lambda tier: priority[tier])
-
-
-def _has_gene_lexical_fallback(metadata: dict[str, Any]) -> bool:
-    for endpoint in ("subject", "object"):
-        endpoint_id = _endpoint_value(metadata, endpoint).casefold()
-        if endpoint_id.startswith(GENE_LIKE_ID_PREFIXES):
-            return True
-        endpoint_type = str(metadata.get(f"llm_{endpoint}_type") or "").casefold()
-        if endpoint_type in {"gene", "protein"}:
-            return True
-    return False
-
-
-def _has_drug_response_context(metadata: dict[str, Any]) -> bool:
-    subject_tier = _endpoint_category_tier(_labels(metadata, "subject"))
-    object_tier = _endpoint_category_tier(_labels(metadata, "object"))
-    has_drug_like_endpoint = "chemical" in {subject_tier, object_tier}
-    text = _edge_specific_text(metadata)
-    tokens = set(_tokens(text))
-    has_response_text = bool(tokens & DRUG_CONTEXT_TERMS)
-    has_therapeutic_response_text = (
-        bool(tokens & THERAPEUTIC_CONTEXT_TERMS)
-        and _has_resistance_response_context_tokens(tokens)
-    )
-    return (has_drug_like_endpoint and has_response_text) or has_therapeutic_response_text
 
 
 def _edge_specific_text(metadata: dict[str, Any]) -> str:
@@ -908,24 +1219,30 @@ def _edge_specific_text(metadata: dict[str, Any]) -> str:
     return " ".join(str(metadata.get(key) or "") for key in keys)
 
 
-def _compact_context_text(metadata: dict[str, Any], page_content: Any) -> str:
-    keys = (
-        "abstract_title",
-        "llm_statement",
-        "llm_relationship",
-        "llm_subject_qualifier",
-        "llm_object_qualifier",
-        "llm_statement_qualifier",
-        "semantic_text",
-    )
-    return " ".join(
-        str(part)
-        for part in (
-            page_content,
-            *(metadata.get(key) for key in keys),
+def _metadata_text(metadata: dict[str, Any], keys: tuple[str, ...]) -> str:
+    return " ".join(_stringify_metadata_value(metadata.get(key)) for key in keys)
+
+
+def _stringify_metadata_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, dict):
+        return " ".join(
+            f"{_stringify_metadata_value(key)} {_stringify_metadata_value(item)}"
+            for key, item in value.items()
         )
-        if part
-    )
+    if isinstance(value, (list, tuple, set)):
+        return " ".join(_stringify_metadata_value(item) for item in value)
+    return str(value)
+
+
+def _term_support(text: str, terms: frozenset[str]) -> dict[str, Any]:
+    tokens = set(_tokens(text))
+    matched = sorted(term for term in terms if set(_tokens(term)).issubset(tokens))
+    return {
+        "matched_terms": matched,
+        "text_present": bool(str(text or "").strip()),
+    }
 
 
 def _endpoint_value(metadata: dict[str, Any], endpoint: str) -> str:

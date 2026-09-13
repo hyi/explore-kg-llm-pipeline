@@ -55,6 +55,7 @@ def test_reciprocal_rank_fusion_deduplicates_and_preserves_channel_metadata() ->
     assert fused[0].metadata["dense_score"] == 0.90
     assert fused[0].metadata["keyword_score"] == 5.0
     assert fused[0].metadata["retrieval_score"] == 1.0
+    assert "multi_channel_bonus" not in fused[0].metadata
 
 
 def test_hybrid_retrieval_records_degraded_mode_when_keyword_channel_unavailable() -> None:
@@ -95,3 +96,25 @@ def test_keyword_only_retrieval_uses_keyword_channel_and_fusion_score() -> None:
     assert result.candidates[0].metadata["retrieval_channels"] == ["keyword"]
     assert result.candidates[0].metadata["retrieval_score"] == 1.0
     assert result.candidates[0].metadata["semantic_score"] == 0.0
+    assert result.diagnostics["original_query"] == "genes in cancer"
+    assert result.diagnostics["keyword_query"]["final_query"] == "cancer"
+
+
+def test_retrieval_passes_original_query_to_dense_but_reports_bm25_content_query() -> None:
+    seen_dense_queries = []
+
+    def dense_retriever(query: str, k: int, model: str | None = None):
+        seen_dense_queries.append(query)
+        return [doc("dense", 0.9)]
+
+    result = retrieve_relationship_candidates(
+        "genes involved in chemoresistance in cancer",
+        k=5,
+        dense_retriever=dense_retriever,
+        keyword_retriever=None,
+        config=RetrievalConfig(mode="dense"),
+    )
+
+    assert seen_dense_queries == ["genes involved in chemoresistance in cancer"]
+    assert result.diagnostics["keyword_query"]["final_query"] == "chemoresistance cancer"
+    assert result.diagnostics["keyword_tokens"] == ["chemoresistance", "cancer"]

@@ -38,7 +38,9 @@ def test_keyword_relationship_search_does_not_score_semantic_text(monkeypatch) -
     assert graph.keyword_relationship_search("genes involved in chemoresistance", k=5) == []
 
     query = str(captured["query"])
-    assert "rel_props.semantic_text" not in query
-    assert "r.semantic_text AS semantic_text" in query
-    assert "rel_props.context_text" in query
-    assert "rel_props.abstract_text" in query
+    assert "coalesce(rel_props.semantic_text" not in query
+    assert "rel_props.semantic_text AS semantic_text" in query
+    assert "rel_props.title_text" not in query
+    assert "rel_props.context_text" not in query
+    assert "rel_props.abstract_text" not in query
+    assert "edge_text" in query

@@ -106,7 +106,7 @@ class PathSearchService:
             "semantic_fetch_k": int(semantic_fetch_k),
             "paths_per_hit": int(paths_per_hit),
             "path_discovery_strategy": "discover_all_selected_anchors_v1",
-            "retrieval_identity_strategy": "relationship_element_id_metadata_v1_keyword_no_semantic_text_v1",
+            "retrieval_identity_strategy": "relationship_element_id_metadata_v1_graph_intent_compatibility_v2",
             "retrieval": self.retrieval_config.to_cache_dict(),
             "anchor_ranking": self.anchor_ranking_config.to_cache_dict(),
         }

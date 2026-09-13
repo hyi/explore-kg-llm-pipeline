@@ -6,12 +6,13 @@ from langchain_core.documents import Document
 from neo4j import GraphDatabase
 
 from explorer.backend.models import Edge, Node, Path
+from explorer.backend.semantic_search.keyword import rank_keyword_records
 from explorer.backend.semantic_search.neighborhood import (
     NeighborhoodExpansionConfig,
     rank_neighborhood_candidates,
 )
+from explorer.backend.semantic_search.query_intent import build_bm25_content_query
 from explorer.backend.semantic_search.ranking import compact_anchor_metadata
-from explorer.backend.semantic_search.retrieval import tokenize_keyword_query
 from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
 from src.embeddings.embedding_utils import (
     cypher_escape_identifier,
@@ -115,7 +116,8 @@ class Neo4jGraphAdapter:
         return enriched
 
     def keyword_relationship_search(self, query: str, k: int = 25) -> list[Document]:
-        tokens = tokenize_keyword_query(query)
+        bm25_query = build_bm25_content_query(query)
+        tokens = list(bm25_query.tokens)
         if not tokens or k <= 0:
             return []
 
@@ -123,33 +125,23 @@ class Neo4jGraphAdapter:
         cypher = """
         MATCH (start)-[r]->(end)
         WITH start, r, end, properties(r) AS rel_props
-        WITH start, r, end,
+        WITH start, r, end, rel_props,
           toLower(
             coalesce(rel_props.edge_text, "") + " " +
-            coalesce(rel_props.llm_subject, "") + " " +
+            CASE
+              WHEN "biolink:Publication" IN labels(start) THEN ""
+              ELSE coalesce(rel_props.llm_subject, start.name, start.id, "")
+            END + " " +
             coalesce(rel_props.llm_subject_qualifier, "") + " " +
             type(r) + " " +
             coalesce(rel_props.llm_relationship, "") + " " +
-            coalesce(rel_props.llm_object, "") + " " +
+            CASE
+              WHEN "biolink:Publication" IN labels(end) THEN ""
+              ELSE coalesce(rel_props.llm_object, end.name, end.id, "")
+            END + " " +
             coalesce(rel_props.llm_object_qualifier, "") + " " +
-            coalesce(rel_props.llm_statement_qualifier, "") + " " +
-            coalesce(start.name, start.id, "") + " " +
-            coalesce(end.name, end.id, "")
-          ) AS edge_text,
-          toLower(coalesce(rel_props.title_text, rel_props.abstract_title, "")) AS title_text,
-          toLower(
-            coalesce(rel_props.context_text, "") + " " +
-            coalesce(rel_props.supporting_sentence, "") + " " +
-            coalesce(rel_props.abstract_text, "")
-          ) AS context_text
-        WITH start, r, end, edge_text, title_text, context_text,
-          [token IN $tokens WHERE edge_text CONTAINS token] AS edge_matches,
-          [token IN $tokens WHERE title_text CONTAINS token] AS title_matches,
-          [token IN $tokens WHERE context_text CONTAINS token] AS context_matches
-        WITH start, r, end, edge_text, title_text, context_text,
-          edge_matches, title_matches, context_matches,
-          3.0 * size(edge_matches) + 2.0 * size(title_matches) + 1.0 * size(context_matches) AS score
-        WHERE score > 0
+            coalesce(rel_props.llm_statement_qualifier, "")
+          ) AS edge_text
         RETURN
           coalesce(r.id, elementId(r)) AS relationship_id,
           elementId(r) AS relationship_element_id,
@@ -160,31 +152,30 @@ class Neo4jGraphAdapter:
           coalesce(end.name, end.id, elementId(end)) AS object_name,
           labels(start) AS subject_labels,
           labels(end) AS object_labels,
-          r.publications AS publications,
-          r.llm_abstract_id AS llm_abstract_id,
-          r.abstract_title AS abstract_title,
+          rel_props.publications AS publications,
+          rel_props.llm_abstract_id AS llm_abstract_id,
+          rel_props.abstract_title AS abstract_title,
           CASE
-            WHEN r.publications IS NOT NULL AND size(r.publications) > 0 THEN r.publications[0]
-            WHEN r.llm_abstract_id IS NOT NULL THEN toString(r.llm_abstract_id)
-            ELSE r.abstract_title
+            WHEN rel_props.publications IS NOT NULL AND size(rel_props.publications) > 0 THEN rel_props.publications[0]
+            WHEN rel_props.llm_abstract_id IS NOT NULL THEN toString(rel_props.llm_abstract_id)
+            ELSE rel_props.abstract_title
           END AS publication_id,
-          coalesce(r.llm_subject, start.name, start.id) AS llm_subject,
-          coalesce(r.llm_object, end.name, end.id) AS llm_object,
-          r.llm_relationship AS llm_relationship,
-          r.semantic_text AS semantic_text,
-          edge_matches,
-          title_matches,
-          context_matches,
-          score
-        ORDER BY score DESC, elementId(r)
-        LIMIT $limit
+          coalesce(rel_props.llm_subject, start.name, start.id) AS llm_subject,
+          coalesce(rel_props.llm_object, end.name, end.id) AS llm_object,
+          rel_props.llm_relationship AS llm_relationship,
+          rel_props.semantic_text AS semantic_text,
+          edge_text
+        ORDER BY elementId(r)
         """
 
         with self._driver.session() as session:
-            records = list(session.run(cypher, tokens=tokens, limit=limit))
+            raw_records = [dict(record) for record in session.run(cypher)]
+
+        records = rank_keyword_records(raw_records, tokens, limit=limit)
 
         results: list[Document] = []
         for record in records:
+            keyword_score = float(record["keyword_score"])
             metadata = {
                 "id": record["relationship_id"],
                 "relationship_id": record["relationship_id"],
@@ -207,18 +198,21 @@ class Neo4jGraphAdapter:
                 "abstract_title": record["abstract_title"],
                 "publication_id": record["publication_id"],
                 "semantic_text": record["semantic_text"],
-                "score": float(record["score"] or 0.0),
-                "keyword_score": float(record["score"] or 0.0),
-                "keyword_edge_matches": list(record["edge_matches"] or []),
-                "keyword_title_matches": list(record["title_matches"] or []),
-                "keyword_context_matches": list(record["context_matches"] or []),
-                "retrieval_method": "neo4j_keyword_scan",
+                "score": keyword_score,
+                "keyword_score": keyword_score,
+                "keyword_edge_matches": list(record["keyword_edge_matches"] or []),
+                "keyword_title_matches": list(record["keyword_title_matches"] or []),
+                "keyword_context_matches": list(record["keyword_context_matches"] or []),
+                "keyword_components": dict(record["keyword_components"] or {}),
+                "keyword_field_weights": dict(record["keyword_field_weights"] or {}),
+                "keyword_scoring_method": record["keyword_scoring_method"],
+                "keyword_query": bm25_query.to_dict(),
+                "retrieval_method": "edge_claim_bm25_scan",
             }
             content_parts = [
                 metadata.get("llm_subject"),
                 metadata.get("predicate"),
                 metadata.get("llm_object"),
-                metadata.get("abstract_title"),
             ]
             results.append(
                 Document(
@@ -550,7 +544,8 @@ class Neo4jGraphAdapter:
                         "neighborhood_ranking_components": candidate["ranking_components"],
                         "neighborhood_ranking_reasons": candidate["ranking_reasons"],
                         "matched_query_tokens": candidate["matched_query_tokens"],
-                        "matched_query_facets": candidate["matched_query_facets"],
+                        "query_intent": candidate["query_intent"],
+                        "relationship_quality_tier": candidate["relationship_quality_tier"],
                         "expansion_focus_id": focus_id,
                     }
                 )

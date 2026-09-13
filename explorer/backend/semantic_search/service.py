@@ -77,7 +77,7 @@ class SemanticSearchService:
                 "raw_candidate_k": raw_k,
                 "retrieval_model": self.model or "configured",
                 "retrieval": retrieval_result.diagnostics,
-                "query_hints": ranking_result.diagnostics["query_hints"],
+                "query_intent": ranking_result.diagnostics["query_intent"],
                 "raw_candidates": raw_candidate_diagnostics,
                 "raw_semantic_candidates": raw_candidate_diagnostics,
                 "reranked_candidates": ranking_result.diagnostics["ranked_candidates"],

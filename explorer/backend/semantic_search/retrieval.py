@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from typing import Any
 
+from explorer.backend.semantic_search.query_intent import build_bm25_content_query
 from explorer.backend.semantic_search.ranking import relationship_identity
 
 DEFAULT_RRF_K = 60
@@ -72,10 +73,13 @@ def retrieve_relationship_candidates(
 ) -> RelationshipRetrievalResult:
     config = config or RetrievalConfig()
     mode = config.normalized_mode()
+    bm25_query = build_bm25_content_query(query)
     diagnostics: dict[str, Any] = {
         "retrieval_mode": mode,
         "requested_k": k,
-        "keyword_tokens": tokenize_keyword_query(query),
+        "original_query": query,
+        "keyword_query": bm25_query.to_dict(),
+        "keyword_tokens": list(bm25_query.tokens),
         "channels": {},
         "degraded": False,
         "degraded_reasons": [],

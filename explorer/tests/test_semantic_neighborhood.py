@@ -65,9 +65,10 @@ def test_query_conditioned_neighbor_ranking_prefers_matching_gene_response_edge(
     )
 
     assert [item["edge"]["id"] for item in result.candidates] == ["gene-response", "generic"]
-    assert "gene_endpoint" in result.candidates[0]["matched_query_facets"]
-    assert "response_predicate" in result.candidates[0]["matched_query_facets"]
-    assert "cancer_context" in result.candidates[0]["matched_query_facets"]
+    assert result.candidates[0]["ranking_components"]["endpoint_category_compatibility"] > 0
+    assert result.candidates[0]["ranking_components"]["predicate_family_compatibility"] > 0
+    assert result.candidates[0]["matched_query_tokens"]
+    assert result.diagnostics["query_intent"]["has_structural_intent"] is True
 
 
 def test_neighborhood_filters_by_category_predicate_direction_and_limit() -> None:
@@ -139,4 +140,5 @@ def test_neighborhood_ranking_is_deterministic_for_score_ties() -> None:
     )
 
     assert [item["edge"]["id"] for item in result.candidates] == ["b", "a"]
-    assert result.candidates[0]["ranking_components"]["query_text_overlap"] == 1.0
+    assert "query_text_overlap" not in result.candidates[0]["ranking_components"]
+    assert result.candidates[0]["matched_query_tokens"] == ["cancer"]

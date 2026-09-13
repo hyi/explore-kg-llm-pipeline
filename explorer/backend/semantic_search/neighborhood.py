@@ -4,26 +4,20 @@ import copy
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from explorer.backend.semantic_search.ranking import (
-    BROAD_RESPONSE_PREDICATES,
-    CANCER_CONTEXT_TERMS,
-    EXPLICIT_RESPONSE_PREDICATES,
-    GENE_CATEGORY_LABELS,
-    GENE_PRODUCT_CATEGORY_LABELS,
-    GENOMIC_VARIANT_CATEGORY_LABELS,
-    QueryHints,
-    parse_query_hints,
+from explorer.backend.semantic_search.query_intent import (
+    QUALITY_CONTEXTUAL_MENTION,
+    QueryIntent,
+    category_families_from_labels,
+    parse_query_intent,
+    predicate_family,
+    relationship_quality_tier,
 )
 from explorer.backend.semantic_search.retrieval import tokenize_keyword_query
 
-NEIGHBORHOOD_RANKING_STRATEGY = "query_ranked_one_hop_v1"
-NEIGHBOR_QUERY_TEXT_WEIGHT = 1.0
-NEIGHBOR_EXPLICIT_RESPONSE_PREDICATE_BOOST = 0.45
-NEIGHBOR_BROAD_RESPONSE_PREDICATE_BOOST = 0.18
-NEIGHBOR_GENE_ENDPOINT_BOOST = 0.35
-NEIGHBOR_GENE_PRODUCT_ENDPOINT_BOOST = 0.30
-NEIGHBOR_GENOMIC_VARIANT_ENDPOINT_BOOST = 0.24
-NEIGHBOR_CANCER_CONTEXT_BOOST = 0.18
+NEIGHBORHOOD_RANKING_STRATEGY = "query_intent_ranked_one_hop_v1"
+NEIGHBOR_ENDPOINT_CATEGORY_MATCH = 0.35
+NEIGHBOR_PREDICATE_FAMILY_MATCH = 0.30
+NEIGHBOR_CONTEXTUAL_MENTION_PENALTY = -0.20
 DEFAULT_NEIGHBOR_EXPANSION_LIMIT = 12
 MAX_NEIGHBOR_EXPANSION_LIMIT = 50
 SUPPORTED_DIRECTIONS = frozenset({"either", "incoming", "outgoing"})
@@ -72,7 +66,7 @@ def rank_neighborhood_candidates(
     config: NeighborhoodExpansionConfig | None = None,
 ) -> NeighborhoodRankingResult:
     config = config or NeighborhoodExpansionConfig()
-    hints = parse_query_hints(query)
+    intent = parse_query_intent(query)
     query_tokens = tokenize_keyword_query(query)
     scored: list[dict[str, Any]] = []
     excluded: list[dict[str, Any]] = []
@@ -84,7 +78,7 @@ def rank_neighborhood_candidates(
         if exclusion_reason:
             excluded.append(_diagnostic_row(normalized, excluded=True, exclusion_reason=exclusion_reason))
             continue
-        scored.append(_score_candidate(normalized, query_tokens=query_tokens, hints=hints))
+        scored.append(_score_candidate(normalized, query_tokens=query_tokens, intent=intent))
 
     scored.sort(
         key=lambda candidate: (
@@ -98,7 +92,7 @@ def rank_neighborhood_candidates(
     selected_ids = {_candidate_identity(candidate) for candidate in selected}
     diagnostics = {
         "ranking_strategy": NEIGHBORHOOD_RANKING_STRATEGY,
-        "query_hints": asdict(hints),
+        "query_intent": intent.to_dict(),
         "query_tokens": query_tokens,
         "config": config.to_dict(),
         "candidate_count": len(candidates),
@@ -121,7 +115,7 @@ def _score_candidate(
     candidate: dict[str, Any],
     *,
     query_tokens: list[str],
-    hints: QueryHints,
+    intent: QueryIntent,
 ) -> dict[str, Any]:
     text = _candidate_text(candidate)
     text_tokens = set(tokenize_keyword_query(text))
@@ -129,36 +123,28 @@ def _score_candidate(
     components: dict[str, float] = {}
     reasons: list[str] = []
 
-    if query_tokens:
-        text_component = NEIGHBOR_QUERY_TEXT_WEIGHT * len(matched_tokens) / len(set(query_tokens))
-        components["query_text_overlap"] = text_component
-        if matched_tokens:
-            reasons.append("query text overlap")
+    endpoint_component = _endpoint_category_component(candidate, intent)
+    if endpoint_component:
+        components["endpoint_category_compatibility"] = endpoint_component
+        reasons.append("endpoint category compatibility")
 
-    if hints.wants_gene:
-        gene_component, gene_reason = _gene_endpoint_component(candidate)
-        components["gene_endpoint"] = gene_component
-        if gene_component:
-            reasons.append(gene_reason)
+    predicate_component = _predicate_family_component(candidate, intent)
+    if predicate_component:
+        components["predicate_family_compatibility"] = predicate_component
+        reasons.append("predicate family compatibility")
 
-    if hints.wants_resistance_or_response:
-        predicate_component, predicate_reason = _response_predicate_component(candidate)
-        components["response_predicate"] = predicate_component
-        if predicate_component:
-            reasons.append(predicate_reason)
-
-    if hints.wants_cancer:
-        cancer_component = NEIGHBOR_CANCER_CONTEXT_BOOST if text_tokens & CANCER_CONTEXT_TERMS else 0.0
-        components["cancer_context"] = cancer_component
-        if cancer_component:
-            reasons.append("cancer context match")
+    quality_tier = relationship_quality_tier(candidate.get("predicate"))
+    if quality_tier == QUALITY_CONTEXTUAL_MENTION:
+        components["relationship_quality"] = NEIGHBOR_CONTEXTUAL_MENTION_PENALTY
+        reasons.append("contextual mention relationship")
 
     score = sum(components.values())
     candidate["neighborhood_score"] = score
     candidate["ranking_components"] = components
     candidate["ranking_reasons"] = reasons or ["query fallback"]
     candidate["matched_query_tokens"] = matched_tokens
-    candidate["matched_query_facets"] = _matched_query_facets(candidate, hints)
+    candidate["query_intent"] = intent.to_dict()
+    candidate["relationship_quality_tier"] = quality_tier
     return candidate
 
 
@@ -178,38 +164,27 @@ def _filter_exclusion_reason(candidate: dict[str, Any], config: NeighborhoodExpa
     return None
 
 
-def _gene_endpoint_component(candidate: dict[str, Any]) -> tuple[float, str]:
-    labels = set(_focus_labels(candidate)) | set(_neighbor_labels(candidate))
-    if labels & GENE_CATEGORY_LABELS:
-        return NEIGHBOR_GENE_ENDPOINT_BOOST, "gene endpoint category match"
-    if labels & GENE_PRODUCT_CATEGORY_LABELS:
-        return NEIGHBOR_GENE_PRODUCT_ENDPOINT_BOOST, "gene product endpoint category match"
-    if labels & GENOMIC_VARIANT_CATEGORY_LABELS:
-        return NEIGHBOR_GENOMIC_VARIANT_ENDPOINT_BOOST, "genomic variant endpoint category match"
-    return 0.0, "no gene endpoint match"
+def _endpoint_category_component(candidate: dict[str, Any], intent: QueryIntent) -> float:
+    requested = {
+        request.family
+        for request in (
+            *intent.requested_subject_categories,
+            *intent.requested_object_categories,
+            *intent.requested_endpoint_categories,
+        )
+    }
+    if not requested:
+        return 0.0
+    labels = _focus_labels(candidate) + _neighbor_labels(candidate)
+    observed = category_families_from_labels(labels)
+    return NEIGHBOR_ENDPOINT_CATEGORY_MATCH if requested & observed else 0.0
 
 
-def _response_predicate_component(candidate: dict[str, Any]) -> tuple[float, str]:
-    predicate = str(candidate.get("predicate") or "")
-    if predicate in EXPLICIT_RESPONSE_PREDICATES:
-        return NEIGHBOR_EXPLICIT_RESPONSE_PREDICATE_BOOST, "explicit response predicate match"
-    if predicate in BROAD_RESPONSE_PREDICATES:
-        return NEIGHBOR_BROAD_RESPONSE_PREDICATE_BOOST, "broad response predicate match"
-    return 0.0, "no response predicate match"
-
-
-def _matched_query_facets(candidate: dict[str, Any], hints: QueryHints) -> list[str]:
-    components = candidate.get("ranking_components", {})
-    facets: list[str] = []
-    if hints.wants_gene and components.get("gene_endpoint", 0.0) > 0:
-        facets.append("gene_endpoint")
-    if hints.wants_resistance_or_response and components.get("response_predicate", 0.0) > 0:
-        facets.append("response_predicate")
-    if hints.wants_cancer and components.get("cancer_context", 0.0) > 0:
-        facets.append("cancer_context")
-    if components.get("query_text_overlap", 0.0) > 0:
-        facets.append("query_text_overlap")
-    return facets
+def _predicate_family_component(candidate: dict[str, Any], intent: QueryIntent) -> float:
+    requested = {request.family for request in intent.requested_predicate_families}
+    if not requested:
+        return 0.0
+    return NEIGHBOR_PREDICATE_FAMILY_MATCH if predicate_family(candidate.get("predicate")) in requested else 0.0
 
 
 def _candidate_text(candidate: dict[str, Any]) -> str:
@@ -250,7 +225,8 @@ def _diagnostic_row(
         "ranking_components": candidate.get("ranking_components", {}),
         "ranking_reasons": candidate.get("ranking_reasons", []),
         "matched_query_tokens": candidate.get("matched_query_tokens", []),
-        "matched_query_facets": candidate.get("matched_query_facets", []),
+        "query_intent": candidate.get("query_intent", {}),
+        "relationship_quality_tier": candidate.get("relationship_quality_tier"),
         "excluded": excluded,
         "exclusion_reason": exclusion_reason,
     }
