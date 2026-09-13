@@ -28,12 +28,11 @@ from explorer.backend.semantic_search.query_intent import (
     relationship_quality_tier,
 )
 
-ANCHOR_RANKING_STRATEGY = "graph_intent_compatibility_v2"
+ANCHOR_RANKING_STRATEGY = "graph_intent_compatibility_v3"
 
 # Initial transparent heuristics. These weights are intentionally simple and
 # should be evaluated against LitCoin retrieval examples before being treated
 # as empirically validated.
-SEMANTIC_SCORE_WEIGHT = 1.0
 MAX_COMPATIBILITY_ADJUSTMENT = 0.25
 ENDPOINT_CATEGORY_MATCH = 0.08
 ENDPOINT_CATEGORY_PARTIAL_MATCH = 0.04
@@ -55,114 +54,10 @@ STRUCTURAL_COMPATIBILITY_TIER_ORDER = {
     "no_structural_intent": 0,
 }
 
-GENE_HINT_TERMS = frozenset({"gene", "genes", "genetic"})
-GENETIC_VARIANT_HINT_TERMS = frozenset(
-    {"mutation", "mutations", "variant", "variants", "allele", "alleles", "polymorphism", "polymorphisms"}
-)
-RESISTANCE_RESPONSE_HINT_TERMS = frozenset(
-    {"resistance", "resistant", "chemoresistance", "chemoresistant", "sensitivity", "response"}
-)
-CANCER_HINT_TERMS = frozenset(
-    {
-        "cancer",
-        "cancers",
-        "tumor",
-        "tumors",
-        "tumour",
-        "tumours",
-        "neoplasm",
-        "neoplasms",
-        "carcinoma",
-        "carcinomas",
-        "glioma",
-        "glioblastoma",
-        "melanoma",
-        "leukemia",
-        "lymphoma",
-    }
-)
-
-EXPLICIT_RESPONSE_PREDICATES = frozenset(
-    {
-        "biolink:affects_response_to",
-        "biolink:increases_response_to",
-        "biolink:decreases_response_to",
-        "biolink:associated_with_resistance_to",
-    }
-)
-BROAD_RESPONSE_PREDICATES = frozenset(
-    {
-        "biolink:affects",
-        "biolink:regulates",
-        "biolink:contributes_to",
-        "biolink:causes",
-        "biolink:associated_with",
-        "biolink:genetically_associated_with",
-        "biolink:correlated_with",
-        "biolink:positively_correlated_with",
-    }
-)
-
-GENE_CATEGORY_LABELS = frozenset(
-    {
-        "biolink:Gene",
-    }
-)
-GENE_PRODUCT_CATEGORY_LABELS = frozenset(
-    {
-        "biolink:GeneOrGeneProduct",
-        "biolink:Protein",
-        "biolink:Polypeptide",
-        "biolink:GeneProductMixin",
-    }
-)
-GENOMIC_VARIANT_CATEGORY_LABELS = frozenset(
-    {
-        "biolink:GenomicEntity",
-        "biolink:SequenceVariant",
-        "biolink:Allele",
-        "biolink:Haplotype",
-    }
-)
-CHEMICAL_CATEGORY_LABELS = frozenset(
-    {
-        "biolink:ChemicalEntity",
-        "biolink:Drug",
-        "biolink:ChemicalOrDrugOrTreatment",
-        "biolink:SmallMolecule",
-    }
-)
-BIOLOGICAL_PROCESS_CATEGORY_LABELS = frozenset(
-    {
-        "biolink:BiologicalProcess",
-        "biolink:BiologicalProcessOrActivity",
-        "biolink:MolecularActivity",
-    }
-)
-DRUG_CONTEXT_TERMS = frozenset(
-    [
-        "drug",
-        "treatment",
-        "therapy",
-        "therapeutic",
-        "chemotherapy",
-        "chemotherapeutic",
-        "chemoresistance",
-        "resistance",
-        "resistant",
-        "sensitivity",
-        "sensitive",
-        "response",
-    ]
-)
-RESISTANCE_RESPONSE_CONTEXT_TERMS = frozenset(
-    {"chemoresistance", "chemoresistant", "resistance", "resistant", "sensitivity", "sensitive"}
-)
-GENERIC_RESPONSE_TERMS = frozenset({"response", "responsive"})
-THERAPEUTIC_CONTEXT_TERMS = frozenset(
+DRUG_RESPONSE_THERAPEUTIC_CONTEXT_TERMS = frozenset(
     {"drug", "drugs", "treatment", "treatments", "therapy", "therapies", "therapeutic", "chemotherapy", "chemotherapeutic"}
 )
-DRUG_RESPONSE_EVIDENCE_TERMS = frozenset(
+DRUG_RESPONSE_EXPLICIT_EVIDENCE_TERMS = frozenset(
     {
         "chemoresistance",
         "chemoresistant",
@@ -174,46 +69,10 @@ DRUG_RESPONSE_EVIDENCE_TERMS = frozenset(
         "sensitivity",
         "sensitive",
     }
-) | THERAPEUTIC_CONTEXT_TERMS
+)
 DRUG_RESPONSE_GENETIC_CATEGORIES = frozenset({CATEGORY_GENE, CATEGORY_GENE_PRODUCT, CATEGORY_SEQUENCE_VARIANT})
 DRUG_RESPONSE_RESPONSE_BEARING_CATEGORIES = frozenset({CATEGORY_PHENOTYPE, CATEGORY_BIOLOGICAL_PROCESS})
 DRUG_RESPONSE_DISEASE_CONTEXT_CATEGORIES = frozenset({CATEGORY_DISEASE})
-CANCER_CONTEXT_TERMS = CANCER_HINT_TERMS | frozenset(
-    {
-        "oncology",
-        "oncogenic",
-        "malignancy",
-        "malignant",
-        "metastasis",
-        "metastatic",
-        "carcinogenesis",
-        "tumorigenesis",
-        "tumorigenic",
-    }
-)
-GENE_LIKE_ID_PREFIXES = (
-    "ncbigene:",
-    "hgnc:",
-    "ensembl:",
-    "uniprotkb:",
-)
-STOPWORDS = frozenset(
-    {
-        "a",
-        "an",
-        "and",
-        "are",
-        "for",
-        "in",
-        "into",
-        "is",
-        "of",
-        "or",
-        "the",
-        "to",
-        "with",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -622,13 +481,20 @@ def _endpoint_category_compatibility(
     partial = sorted(request for request in requested if request not in matched and _category_partially_matches(request, endpoint_categories))
     missing = sorted(request for request in requested if request not in matched and request not in partial)
     if matched:
+        status = "match" if not missing else "partial"
+        score = ENDPOINT_CATEGORY_MATCH if status == "match" else ENDPOINT_CATEGORY_PARTIAL_MATCH
+        reason = (
+            f"endpoint category match: {', '.join(matched)}"
+            if status == "match"
+            else f"partial endpoint category match: {', '.join(matched)}; missing {', '.join(missing)}"
+        )
         return {
-            "status": "match",
-            "score": ENDPOINT_CATEGORY_MATCH,
+            "status": status,
+            "score": score,
             "matched": matched,
             "partial": partial,
             "missing": missing,
-            "reason": f"endpoint category match: {', '.join(matched)}",
+            "reason": reason,
         }
     if partial:
         return {
@@ -739,7 +605,7 @@ def _drug_response_argument_support(
     endpoint_support = _drug_response_endpoint_role_support(subject_categories, object_categories)
     original_relationship_support = _term_support(
         _metadata_text(metadata, ("llm_relationship", "original_relationship", "relationship")),
-        DRUG_RESPONSE_EVIDENCE_TERMS,
+        DRUG_RESPONSE_EXPLICIT_EVIDENCE_TERMS,
     )
     qualifier_support = _term_support(
         _metadata_text(
@@ -754,9 +620,31 @@ def _drug_response_argument_support(
                 "qualifiers",
             ),
         ),
-        DRUG_RESPONSE_EVIDENCE_TERMS,
+        DRUG_RESPONSE_EXPLICIT_EVIDENCE_TERMS,
     )
-    has_claim_evidence = bool(original_relationship_support["matched_terms"] or qualifier_support["matched_terms"])
+    therapeutic_context_support = _term_support(
+        _metadata_text(
+            metadata,
+            (
+                "llm_subject_qualifier",
+                "llm_object_qualifier",
+                "llm_statement_qualifier",
+                "subject_qualifier",
+                "object_qualifier",
+                "statement_qualifier",
+                "qualifiers",
+                "llm_relationship",
+                "original_relationship",
+                "relationship",
+            ),
+        ),
+        DRUG_RESPONSE_THERAPEUTIC_CONTEXT_TERMS,
+    )
+    has_claim_evidence = bool(
+        original_relationship_support["matched_terms"]
+        or qualifier_support["matched_terms"]
+        or therapeutic_context_support["matched_terms"]
+    )
 
     if (
         endpoint_support["status"] == "match"
@@ -777,7 +665,14 @@ def _drug_response_argument_support(
         "original_relationship_support": original_relationship_support,
         "endpoint_role_support": endpoint_support,
         "qualifier_support": qualifier_support,
-        "final_reason": _drug_response_final_reason(classification, endpoint_support, original_relationship_support, qualifier_support),
+        "therapeutic_context_support": therapeutic_context_support,
+        "final_reason": _drug_response_final_reason(
+            classification,
+            endpoint_support,
+            original_relationship_support,
+            qualifier_support,
+            therapeutic_context_support,
+        ),
     }
 
 
@@ -836,6 +731,7 @@ def _drug_response_final_reason(
     endpoint_support: dict[str, Any],
     original_relationship_support: dict[str, Any],
     qualifier_support: dict[str, Any],
+    therapeutic_context_support: dict[str, Any],
 ) -> str:
     if classification == "validated":
         if endpoint_support["status"] == "match":
@@ -844,6 +740,8 @@ def _drug_response_final_reason(
             return "claim qualifier supplies explicit treatment/response evidence"
         return "original relationship supplies explicit treatment/response evidence"
     if classification == "partial":
+        if therapeutic_context_support["matched_terms"]:
+            return "therapeutic context present without explicit response evidence"
         return endpoint_support["reason"]
     if classification == "incompatible":
         return endpoint_support["reason"]

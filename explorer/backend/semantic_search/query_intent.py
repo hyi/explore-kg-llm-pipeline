@@ -166,7 +166,6 @@ CATEGORY_LABELS: dict[str, frozenset[str]] = {
             "biolink:SequenceVariant",
             "biolink:Allele",
             "biolink:Haplotype",
-            "biolink:GenomicEntity",
         }
     ),
     CATEGORY_DRUG_OR_CHEMICAL: frozenset(
@@ -329,8 +328,11 @@ def parse_query_intent(query: str) -> QueryIntent:
     endpoint_requests: list[CategoryRequest] = []
     predicate_requests: list[PredicateFamilyRequest] = []
 
-    for expression, family in CATEGORY_EXPRESSIONS:
-        if _contains_phrase(text, expression):
+    for match in _non_overlapping_expression_matches(text):
+        expression = match["expression"]
+        kind = match["kind"]
+        if kind == "category":
+            family = match["family"]
             role = _category_role(text, expression)
             request = CategoryRequest(family=family, role=role, expressions=(expression,))
             if role == ROLE_SUBJECT:
@@ -343,9 +345,9 @@ def parse_query_intent(query: str) -> QueryIntent:
                 RecognizedExpression(text=expression, kind="category", normalized=family, role=role)
             )
             unrecognized.difference_update(_tokens(expression))
-
-    for expression, family, direction in PREDICATE_EXPRESSIONS:
-        if _contains_phrase(text, expression):
+        elif kind == "predicate_family":
+            family = match["family"]
+            direction = match["direction"]
             predicate_requests.append(
                 PredicateFamilyRequest(family=family, expressions=(expression,), direction=direction)
             )
@@ -361,9 +363,7 @@ def parse_query_intent(query: str) -> QueryIntent:
                         expressions=("response to",),
                     )
                 )
-
-    for expression in RELATIONAL_SCAFFOLD_EXPRESSIONS:
-        if _contains_phrase(text, expression):
+        elif kind == "relational_scaffold":
             recognized.append(
                 RecognizedExpression(text=expression, kind="relational_scaffold", normalized=expression)
             )
@@ -506,6 +506,67 @@ def _normalize_text(text: str) -> str:
 
 def _contains_phrase(text: str, phrase: str) -> bool:
     return bool(re.search(rf"\b{re.escape(phrase)}\b", text))
+
+
+def _non_overlapping_expression_matches(text: str) -> list[dict[str, Any]]:
+    candidates = []
+    for expression, family in CATEGORY_EXPRESSIONS:
+        candidates.extend(
+            {
+                "start": match.start(),
+                "end": match.end(),
+                "expression": expression,
+                "kind": "category",
+                "family": family,
+                "direction": None,
+            }
+            for match in _phrase_matches(text, expression)
+        )
+    for expression, family, direction in PREDICATE_EXPRESSIONS:
+        candidates.extend(
+            {
+                "start": match.start(),
+                "end": match.end(),
+                "expression": expression,
+                "kind": "predicate_family",
+                "family": family,
+                "direction": direction,
+            }
+            for match in _phrase_matches(text, expression)
+        )
+    for expression in RELATIONAL_SCAFFOLD_EXPRESSIONS:
+        candidates.extend(
+            {
+                "start": match.start(),
+                "end": match.end(),
+                "expression": expression,
+                "kind": "relational_scaffold",
+                "family": expression,
+                "direction": None,
+            }
+            for match in _phrase_matches(text, expression)
+        )
+
+    selected: list[dict[str, Any]] = []
+    occupied: list[tuple[int, int]] = []
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (-(item["end"] - item["start"]), item["start"], item["kind"], item["expression"]),
+    ):
+        span = (candidate["start"], candidate["end"])
+        if any(_spans_overlap(span, used) for used in occupied):
+            continue
+        selected.append(candidate)
+        occupied.append(span)
+    return sorted(selected, key=lambda item: (item["start"], item["end"], item["kind"]))
+
+
+def _phrase_matches(text: str, phrase: str) -> list[re.Match[str]]:
+    return list(re.finditer(rf"\b{re.escape(phrase)}\b", text))
+
+
+def _spans_overlap(left: tuple[int, int], right: tuple[int, int]) -> bool:
+    return left[0] < right[1] and right[0] < left[1]
 
 
 def _tokens(text: str) -> list[str]:

@@ -112,6 +112,17 @@ def test_involved_in_is_relational_scaffolding_not_predicate_family() -> None:
     assert any(expression.kind == "relational_scaffold" for expression in intent.recognized_expressions)
 
 
+def test_query_intent_uses_longest_non_overlapping_expression_matches() -> None:
+    intent = parse_query_intent("gene products associated with resistance to paclitaxel")
+
+    recognized = [(expression.text, expression.kind, expression.normalized) for expression in intent.recognized_expressions]
+    assert ("gene products", "category", "gene_product") in recognized
+    assert ("gene", "category", "gene") not in recognized
+    assert ("associated with resistance to", "predicate_family", PREDICATE_DRUG_RESPONSE) in recognized
+    assert ("associated with", "predicate_family", PREDICATE_ASSOCIATION) not in recognized
+    assert ("resistance to", "predicate_family", PREDICATE_DRUG_RESPONSE) not in recognized
+
+
 def test_broad_topic_query_has_no_structural_intent() -> None:
     intent = parse_query_intent("broad oxidative stress literature")
 
@@ -242,6 +253,42 @@ def test_drug_response_predicate_requires_argument_support_for_complete_match() 
     assert support["qualifier_support"]["matched_terms"] == []
 
 
+def test_genomic_entity_label_is_not_exact_sequence_variant_evidence() -> None:
+    ranked = rerank_and_diversify_relationships(
+        query="variants affecting response to paclitaxel",
+        candidates=[
+            doc(
+                "broad-genomic-entity",
+                0.99,
+                subject="genomic feature",
+                obj="paclitaxel",
+                predicate="biolink:affects_response_to",
+                llm_relationship="affects response to",
+                subject_labels=["biolink:GenomicEntity"],
+                object_labels=["biolink:Drug"],
+            ),
+            doc(
+                "specific-variant",
+                0.80,
+                subject="variant allele",
+                obj="paclitaxel",
+                predicate="biolink:affects_response_to",
+                llm_relationship="affects response to",
+                subject_labels=["biolink:SequenceVariant"],
+                object_labels=["biolink:Drug"],
+            ),
+        ],
+        requested_k=2,
+        config=AnchorRankingConfig(max_per_publication=10),
+    )
+
+    assert [hit.metadata["id"] for hit in ranked] == ["specific-variant", "broad-genomic-entity"]
+    broad = ranked[1].metadata
+    assert broad["endpoint_category_compatibility"]["status"] == "partial"
+    assert broad["endpoint_category_compatibility"]["missing"] == [CATEGORY_SEQUENCE_VARIANT]
+    assert broad["structural_compatibility_status"] == "partial_match"
+
+
 def test_drug_response_qualifier_can_validate_without_drug_endpoint() -> None:
     ranked = rerank_and_diversify_relationships(
         query="genes involved in chemoresistance in cancer",
@@ -266,6 +313,33 @@ def test_drug_response_qualifier_can_validate_without_drug_endpoint() -> None:
     assert metadata["predicate_family_compatibility"]["status"] == "match"
     support = metadata["predicate_family_compatibility"]["drug_response_argument_compatibility"]
     assert support["qualifier_support"]["matched_terms"]
+
+
+def test_therapeutic_qualifier_without_response_evidence_is_only_partial() -> None:
+    ranked = rerank_and_diversify_relationships(
+        query="genes involved in chemoresistance in cancer",
+        candidates=[
+            doc(
+                "treatment-context-only",
+                0.90,
+                subject="EGFR",
+                obj="glioblastoma",
+                predicate="biolink:associated_with_resistance_to",
+                llm_relationship="associated with",
+                statement_qualifier="temozolomide chemotherapy treatment",
+                subject_labels=["biolink:Gene"],
+                object_labels=["biolink:Disease"],
+            ),
+        ],
+        requested_k=1,
+    )
+
+    metadata = ranked[0].metadata
+    assert metadata["structural_compatibility_status"] == "partial_match"
+    support = metadata["predicate_family_compatibility"]["drug_response_argument_compatibility"]
+    assert support["classification"] == "partial"
+    assert support["qualifier_support"]["matched_terms"] == []
+    assert support["therapeutic_context_support"]["matched_terms"]
 
 
 def test_biological_process_regulated_by_gene_uses_passive_role_expectation() -> None:
