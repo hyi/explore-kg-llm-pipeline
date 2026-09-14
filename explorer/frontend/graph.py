@@ -193,6 +193,7 @@ def node_action_panel(
     ]
     if node_message:
         children.append(html.Div(node_message, className="node-inline-message"))
+    filter_options = context.get("neighborhood_filter_options") or {}
     children.append(
         html.Div(
             [
@@ -234,21 +235,23 @@ def node_action_panel(
                 ),
                 html.Div(
                     [
-                        dcc.Input(
-                            id="expansion-category-filter-input",
-                            type="text",
-                            value=", ".join(context.get("expansion_categories", [])),
-                            placeholder="Neighbor categories, comma-separated",
-                            debounce=True,
-                            className="expansion-input",
+                        html.Label("Neighbor categories", htmlFor="expansion-category-filter-dropdown"),
+                        dcc.Dropdown(
+                            id="expansion-category-filter-dropdown",
+                            options=_dropdown_options(filter_options.get("node_categories", [])),
+                            value=context.get("expansion_categories", []),
+                            multi=True,
+                            placeholder="Select one or more categories",
+                            className="expansion-select",
                         ),
-                        dcc.Input(
-                            id="expansion-predicate-filter-input",
-                            type="text",
-                            value=", ".join(context.get("expansion_predicates", [])),
-                            placeholder="Predicates, comma-separated",
-                            debounce=True,
-                            className="expansion-input",
+                        html.Label("Predicates", htmlFor="expansion-predicate-filter-dropdown"),
+                        dcc.Dropdown(
+                            id="expansion-predicate-filter-dropdown",
+                            options=_dropdown_options(filter_options.get("predicates", [])),
+                            value=context.get("expansion_predicates", []),
+                            multi=True,
+                            placeholder="Select one or more predicates",
+                            className="expansion-select",
                         ),
                     ],
                     className="expansion-control-row",
@@ -286,6 +289,10 @@ def node_action_panel(
         children,
         className="node-actions",
     )
+
+
+def _dropdown_options(values: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
+    return [{"label": value, "value": value} for value in values]
 
 
 def cytoscape_stylesheet() -> list[dict[str, Any]]:

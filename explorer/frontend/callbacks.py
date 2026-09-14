@@ -170,6 +170,7 @@ def register_callbacks(app: Dash) -> None:
         try:
             focus_ids = [node["element_id"] for node in path["nodes"]]
             subgraph = graph.context_subgraph(focus_ids)
+            filter_options = graph.neighborhood_filter_options()
         finally:
             graph.close()
 
@@ -182,6 +183,7 @@ def register_callbacks(app: Dash) -> None:
             "selected_node_id": None,
             "active_query": path.get("source_query") or (current_query or "").strip(),
             "connected_expansion_limit": CONNECTED_EXPANSION_LIMIT,
+            "neighborhood_filter_options": filter_options,
             "graph_revision": 0,
             "zoom": 1,
             "pan": {"x": 0, "y": 0},
@@ -244,8 +246,8 @@ def register_callbacks(app: Dash) -> None:
         State("expansion-query-input", "value"),
         State("expansion-direction-dropdown", "value"),
         State("expansion-limit-input", "value"),
-        State("expansion-category-filter-input", "value"),
-        State("expansion-predicate-filter-input", "value"),
+        State("expansion-category-filter-dropdown", "value"),
+        State("expansion-predicate-filter-dropdown", "value"),
         prevent_initial_call=True,
     )
     def update_context_graph(
@@ -261,8 +263,8 @@ def register_callbacks(app: Dash) -> None:
         expansion_query: str | None,
         expansion_direction: str | None,
         expansion_limit: float | str | None,
-        expansion_categories: str | None,
-        expansion_predicates: str | None,
+        expansion_categories: list[str] | str | None,
+        expansion_predicates: list[str] | str | None,
     ) -> tuple[dict[str, Any], Any]:
         action = ctx.triggered_id
         if not action or not selected_path_id:
@@ -309,8 +311,8 @@ def register_callbacks(app: Dash) -> None:
                         or ""
                     ).strip()
                     limit = _bounded_expansion_limit(expansion_limit)
-                    categories = _parse_comma_separated(expansion_categories)
-                    predicates = _parse_comma_separated(expansion_predicates)
+                    categories = _normalize_filter_values(expansion_categories)
+                    predicates = _normalize_filter_values(expansion_predicates)
                     context["active_query"] = active_query
                     context["expansion_query"] = active_query
                     context["connected_expansion_limit"] = limit
@@ -503,6 +505,12 @@ def _active_selected_node_id(
 
 def _parse_comma_separated(value: str | None) -> list[str]:
     return [part.strip() for part in (value or "").split(",") if part.strip()]
+
+
+def _normalize_filter_values(value: list[str] | tuple[str, ...] | str | None) -> list[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return _parse_comma_separated(value)
 
 
 def _bounded_expansion_limit(value: float | str | None) -> int:

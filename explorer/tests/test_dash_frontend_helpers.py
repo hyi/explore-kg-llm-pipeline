@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 from explorer.backend.models import Edge, Node, Path
-from explorer.frontend.callbacks import _bounded_expansion_limit, _parse_comma_separated
+from explorer.frontend.callbacks import (
+    _bounded_expansion_limit,
+    _normalize_filter_values,
+    _parse_comma_separated,
+)
 from explorer.frontend.components import render_path_details
 from explorer.frontend.graph import (
     cytoscape_elements,
@@ -262,6 +266,10 @@ def test_node_action_panel_includes_ranked_expansion_controls() -> None:
         "expansion_direction": "outgoing",
         "expansion_categories": ["biolink:Gene"],
         "expansion_predicates": ["biolink:affects_response_to"],
+        "neighborhood_filter_options": {
+            "node_categories": ["biolink:Disease", "biolink:Gene"],
+            "predicates": ["biolink:affects_response_to", "biolink:associated_with"],
+        },
     }
 
     panel = node_action_panel(path, context, selected_node_id="n1")
@@ -270,12 +278,27 @@ def test_node_action_panel_includes_ranked_expansion_controls() -> None:
     assert by_id["expansion-query-input"].value == "genes in cancer"
     assert by_id["expansion-limit-input"].value == 7
     assert by_id["expansion-direction-dropdown"].value == "outgoing"
-    assert by_id["expansion-category-filter-input"].value == "biolink:Gene"
-    assert by_id["expansion-predicate-filter-input"].value == "biolink:affects_response_to"
+    assert by_id["expansion-category-filter-dropdown"].multi is True
+    assert by_id["expansion-category-filter-dropdown"].value == ["biolink:Gene"]
+    assert by_id["expansion-category-filter-dropdown"].options == [
+        {"label": "biolink:Disease", "value": "biolink:Disease"},
+        {"label": "biolink:Gene", "value": "biolink:Gene"},
+    ]
+    assert by_id["expansion-predicate-filter-dropdown"].multi is True
+    assert by_id["expansion-predicate-filter-dropdown"].value == ["biolink:affects_response_to"]
+    assert by_id["expansion-predicate-filter-dropdown"].options == [
+        {"label": "biolink:affects_response_to", "value": "biolink:affects_response_to"},
+        {"label": "biolink:associated_with", "value": "biolink:associated_with"},
+    ]
 
 
 def test_expansion_filter_helpers_parse_and_bound_values() -> None:
     assert _parse_comma_separated("biolink:Gene, biolink:Disease,,") == ["biolink:Gene", "biolink:Disease"]
+    assert _normalize_filter_values(["biolink:Gene", " ", "biolink:Disease"]) == [
+        "biolink:Gene",
+        "biolink:Disease",
+    ]
+    assert _normalize_filter_values("biolink:Gene, biolink:Disease,,") == ["biolink:Gene", "biolink:Disease"]
     assert _bounded_expansion_limit(None) == 12
     assert _bounded_expansion_limit("200") == 50
     assert _bounded_expansion_limit("bad") == 12

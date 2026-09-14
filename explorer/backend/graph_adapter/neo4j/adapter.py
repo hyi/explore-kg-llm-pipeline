@@ -222,6 +222,31 @@ class Neo4jGraphAdapter:
             )
         return results
 
+    def neighborhood_filter_options(self) -> dict[str, list[str]]:
+        """Return available node labels and relationship types for expansion filters."""
+        cypher = """
+        CALL {
+          MATCH (n)
+          UNWIND labels(n) AS category
+          RETURN collect(DISTINCT category) AS node_categories
+        }
+        CALL {
+          MATCH ()-[r]->()
+          RETURN collect(DISTINCT type(r)) AS predicates
+        }
+        RETURN node_categories, predicates
+        """
+        with self._driver.session() as session:
+            record = session.run(cypher).single()
+
+        if not record:
+            return {"node_categories": [], "predicates": []}
+
+        return {
+            "node_categories": _sorted_nonempty_strings(record["node_categories"]),
+            "predicates": _sorted_nonempty_strings(record["predicates"]),
+        }
+
     def candidate_paths_for_semantic_hit(
         self,
         metadata: dict[str, Any],
@@ -753,3 +778,7 @@ def _first_present(metadata: dict[str, Any], *keys: str) -> str | None:
 
 def _bounded_int(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, int(value)))
+
+
+def _sorted_nonempty_strings(values: Any) -> list[str]:
+    return sorted({str(value) for value in values or [] if str(value).strip()})

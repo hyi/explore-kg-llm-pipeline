@@ -222,12 +222,21 @@ The work has three related but distinct workstreams:
    relationships.
 3. Prototype bounded cross-graph expansion from LitCoin anchors into ROBOKOP.
 
+Current implementation status:
+
+* Workstream 1 is implemented and should be treated as closed unless the user
+  explicitly reopens ranking work.
+* Workstream 1B is implemented for global dense/keyword/hybrid retrieval,
+  graph-aware anchor reranking, diagnostics, cache identity, and bounded ranked
+  one-hop expansion. Manual GUI validation of neighborhood expansion may still
+  be useful.
+* The next active implementation focus is Workstream 2: comparative embedding
+  and retrieval investigation.
+
 Use the following milestone order unless the user approves a change:
 
-1. stabilize query-aware, diversified dense anchors
-2. add and evaluate keyword and hybrid retrieval plus ranked local expansion
-3. create the analysis notebook and presentation-ready evidence
-4. add a minimal, bounded LitCoin-to-ROBOKOP demo path
+1. create the analysis notebook and presentation-ready evidence for Workstream 2
+2. add a minimal, bounded LitCoin-to-ROBOKOP demo path
 
 The notebook may be developed incrementally as each retrieval variant becomes
 available, but presentation conclusions must be regenerated from the final
@@ -237,7 +246,7 @@ authorize adding embedding projections to the Dash application.
 
 ---
 
-## Active Workstream 1: Query-Aware, Diverse Semantic Anchors
+## Implemented Workstream 1: Query-Aware, Diverse Semantic Anchors
 
 ### Motivation
 
@@ -476,7 +485,7 @@ and any metadata limitations discovered in the actual Neo4j records.
 
 ---
 
-## Active Workstream 1B: Hybrid Retrieval and Ranked Neighborhood Expansion
+## Implemented Workstream 1B: Hybrid Retrieval and Ranked Neighborhood Expansion
 
 ### Design Basis
 
@@ -550,6 +559,18 @@ rather than silently labeling a single-channel result as hybrid.
 
 ### Human-Guided Neighborhood Retrieval
 
+Implementation status: backend ranked one-hop expansion and frontend node
+expansion controls are implemented. The UI lets the user select a node, provide
+an optional refined expansion query, set direction, limit, adjacent-category
+filters, and predicate filters, then expand connected neighbors. Adjacent
+category and predicate filters are KG-populated multi-select dropdowns backed
+by Neo4j node labels and relationship types; selected values are OR filters.
+The ranking uses query intent, endpoint category compatibility,
+predicate-family compatibility, lexical matched-token diagnostics, and
+relationship-quality handling. The current UI exposes bounded expansion by
+limit; it does not have a separate "show all unranked neighbors" button, so
+increasing the limit is the available fallback exploration mechanism.
+
 When a user expands a LitCoin node or path, keep the active query available and
 allow an optional user-refined expansion query. Provide bounded controls for:
 
@@ -569,6 +590,13 @@ available and make retrieval limits visible rather than presenting them as
 complete neighborhoods.
 
 ### Re-Anchoring
+
+Implementation status: baseline session-preserving re-anchoring is available
+because a user can run another global search without clearing accepted paths,
+bookmarks, rejected paths, notes, or search history. A dedicated UI action that
+merges alternate anchors into the currently displayed candidate branch has not
+been implemented and should be treated as future product work, not required for
+Workstream 2.
 
 Global search must remain available after exploration begins. Add or preserve
 a workflow that lets the user find alternate anchors and add a new branch
@@ -599,6 +627,12 @@ than LitCoin paths, and use autonomous agent-generated subqueries.
 ---
 
 ## Active Workstream 2: Comparative Embedding and Retrieval Investigation
+
+Next-agent focus: implement this workstream next. Do not continue tuning
+Workstream 1 or 1B ranking, retrieval, or UI behavior unless the user
+explicitly requests it. Reuse the implemented dense, keyword, hybrid,
+graph-intent reranking, diagnostics, and cache metadata as inputs for analysis
+rather than modifying those systems.
 
 ### Purpose
 
