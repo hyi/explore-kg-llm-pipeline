@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from analysis.embedding_comparison import (
+    DuplicateRelationshipIdError,
+    InconsistentEmbeddingDimensionError,
+    MissingRelationshipIdError,
+    RetrievalResultSet,
+    apply_query_highlights,
+    build_embedding_collection,
+    build_retrieval_comparison_table,
+    deduplicate_exact_duplicate_rows,
+    match_embedding_collections,
+    nearest_neighbor_jaccard,
+    nearest_neighbors,
+    project_embeddings,
+    same_metadata_fraction,
+    sanitize_payload,
+    top_k_overlap,
+)
+
+
+def row(
+    rel_id: str,
+    vector: list[float],
+    *,
+    publication_id: str = "pmid:1",
+    predicate: str = "biolink:related_to",
+) -> dict:
+    return {
+        "rel_id": rel_id,
+        "embedding": vector,
+        "subject": f"{rel_id}-subject",
+        "object": f"{rel_id}-object",
+        "predicate": predicate,
+        "publication_id": publication_id,
+        "abstract_title": f"{publication_id} title",
+        "semantic_text": f"{rel_id} semantic text",
+    }
+
+
+def test_edge_matching_is_stable_regardless_of_input_order() -> None:
+    openai = build_embedding_collection(
+        [row("r2", [0.0, 1.0]), row("r1", [1.0, 0.0])],
+        model_name="openai",
+    )
+    sapbert = build_embedding_collection(
+        [row("r1", [1.0, 1.0]), row("r2", [1.0, -1.0])],
+        model_name="sapbert",
+    )
+
+    matched = match_embedding_collections(openai, sapbert)
+
+    assert matched.relationship_ids == ("r1", "r2")
+    assert [record.relationship_id for record in matched.left_records] == ["r1", "r2"]
+    assert [record.relationship_id for record in matched.right_records] == ["r1", "r2"]
+
+
+def test_missing_and_duplicate_relationship_ids_are_reported_clearly() -> None:
+    with pytest.raises(MissingRelationshipIdError, match="missing a relationship ID"):
+        build_embedding_collection([{"embedding": [1.0, 0.0]}], model_name="openai")
+
+    with pytest.raises(DuplicateRelationshipIdError, match="duplicate relationship ID 'r1'"):
+        build_embedding_collection(
+            [row("r1", [1.0, 0.0]), row("r1", [0.0, 1.0])],
+            model_name="openai",
+        )
+
+
+def test_exact_duplicate_rows_can_be_normalized_explicitly() -> None:
+    duplicate = row("r1", [1.0, 0.0])
+    rows, report = deduplicate_exact_duplicate_rows([duplicate, dict(duplicate)], model_name="openai")
+
+    assert rows == [duplicate]
+    assert report["input_row_count"] == 2
+    assert report["output_row_count"] == 1
+    assert report["exact_duplicate_row_count"] == 1
+
+    with pytest.raises(DuplicateRelationshipIdError, match="conflicting duplicate relationship ID 'r1'"):
+        deduplicate_exact_duplicate_rows(
+            [row("r1", [1.0, 0.0]), row("r1", [0.0, 1.0])],
+            model_name="openai",
+        )
+
+
+def test_embedding_dimension_inconsistencies_are_reported() -> None:
+    with pytest.raises(InconsistentEmbeddingDimensionError, match="inconsistent embedding dimensions"):
+        build_embedding_collection(
+            [row("r1", [1.0, 0.0]), row("r2", [1.0, 0.0, 0.0])],
+            model_name="openai",
+        )
+
+
+def test_mismatched_model_coverage_is_reported_not_silently_discarded() -> None:
+    openai = build_embedding_collection(
+        [row("r1", [1.0, 0.0]), row("r2", [0.0, 1.0])],
+        model_name="openai",
+    )
+    sapbert = build_embedding_collection(
+        [row("r2", [0.0, 1.0]), row("r3", [1.0, 1.0])],
+        model_name="sapbert",
+    )
+
+    matched = match_embedding_collections(openai, sapbert)
+
+    assert matched.relationship_ids == ("r2",)
+    assert matched.coverage_report["same_population"] is False
+    assert matched.coverage_report["left_only_ids"] == ["r1"]
+    assert matched.coverage_report["right_only_ids"] == ["r3"]
+
+
+def test_nearest_neighbor_and_top_k_overlap_metrics_return_known_values() -> None:
+    openai = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0]),
+            row("r2", [0.9, 0.1]),
+            row("r3", [0.0, 1.0]),
+        ],
+        model_name="openai",
+    )
+    sapbert = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0]),
+            row("r2", [0.0, 1.0]),
+            row("r3", [0.9, 0.1]),
+        ],
+        model_name="sapbert",
+    )
+
+    openai_neighbors = nearest_neighbors(openai, k=1)
+    sapbert_neighbors = nearest_neighbors(sapbert, k=1)
+    agreement = nearest_neighbor_jaccard(openai_neighbors, sapbert_neighbors, k=1)
+    overlap = top_k_overlap(["r1", "r2", "r3"], ["r2", "r4", "r1"], k=2)
+
+    assert openai_neighbors["r1"][0].relationship_id == "r2"
+    assert sapbert_neighbors["r1"][0].relationship_id == "r3"
+    assert agreement["per_edge"]["r1"] == 0.0
+    assert overlap["shared_ids"] == ["r2"]
+    assert overlap["jaccard"] == pytest.approx(1 / 3)
+
+
+def test_retrieval_comparison_table_retains_mode_and_result_type_labels() -> None:
+    table = build_retrieval_comparison_table(
+        [
+            RetrievalResultSet(
+                query="genes in cancer",
+                retrieval_mode="hybrid",
+                model_name="openai",
+                result_set_type="final_anchor",
+                results=[
+                    {
+                        "relationship_id": "r1",
+                        "score": 0.7,
+                        "predicate": "biolink:affects_response_to",
+                        "embedding": [0.1] * 12,
+                    }
+                ],
+            )
+        ]
+    )
+
+    assert table[0]["retrieval_mode"] == "hybrid"
+    assert table[0]["retrieval_model"] == "openai"
+    assert table[0]["result_set_type"] == "final_anchor"
+    assert "embedding" not in table[0]["metadata"]
+
+
+def test_same_publication_fraction_is_calculated_correctly() -> None:
+    collection = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0], publication_id="p1"),
+            row("r2", [0.9, 0.1], publication_id="p1"),
+            row("r3", [0.0, 1.0], publication_id="p2"),
+        ],
+        model_name="openai",
+    )
+    neighbors = {
+        "r1": ["r2", "r3"],
+        "r2": ["r1", "r3"],
+        "r3": ["r1", "r2"],
+    }
+
+    fraction = same_metadata_fraction(collection, neighbors, metadata_field="publication_id", k=2)
+
+    assert fraction["per_edge"]["r1"] == 0.5
+    assert fraction["per_edge"]["r2"] == 0.5
+    assert fraction["per_edge"]["r3"] == 0.0
+    assert fraction["mean_fraction"] == pytest.approx(1 / 3)
+
+
+def test_projection_and_sampling_are_reproducible_with_fixed_seed() -> None:
+    collection = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0, 0.0]),
+            row("r2", [0.0, 1.0, 0.0]),
+            row("r3", [0.0, 0.0, 1.0]),
+            row("r4", [1.0, 1.0, 0.0]),
+        ],
+        model_name="openai",
+    )
+
+    first = project_embeddings(collection, seed=42, max_points=3)
+    second = project_embeddings(collection, seed=42, max_points=3)
+
+    assert first.parameters == second.parameters
+    assert first.rows == second.rows
+    assert len(first.rows) == 3
+
+
+def test_query_result_highlighting_uses_stable_relationship_ids() -> None:
+    projection_rows = [
+        {"relationship_id": "r1", "x": 0.0, "y": 0.0},
+        {"relationship_id": "r2", "x": 1.0, "y": 1.0},
+    ]
+    result_rows = [
+        {"relationship_id": "r2", "rank": 1},
+        {"relationship_id": "r3", "rank": 2},
+    ]
+
+    highlighted = apply_query_highlights(projection_rows, result_rows, top_k=1, query="drug resistance")
+
+    assert highlighted[0]["is_highlighted"] is False
+    assert highlighted[1]["is_highlighted"] is True
+    assert highlighted[1]["highlight_rank"] == 1
+
+
+def test_raw_and_reranked_result_sets_remain_distinguishable() -> None:
+    raw = RetrievalResultSet(
+        query="drug resistance",
+        retrieval_mode="dense",
+        model_name="sapbert",
+        result_set_type="raw",
+        results=[{"relationship_id": "r1", "semantic_score": 0.9}],
+    )
+    reranked = RetrievalResultSet(
+        query="drug resistance",
+        retrieval_mode="dense",
+        model_name="sapbert",
+        result_set_type="final_anchor",
+        results=[{"relationship_id": "r1", "anchor_score": 1.0}],
+    )
+
+    table = build_retrieval_comparison_table([raw, reranked])
+
+    assert [row["result_set_type"] for row in table] == ["raw", "final_anchor"]
+    assert table[0]["semantic_score"] == 0.9
+    assert table[1]["anchor_score"] == 1.0
+
+
+def test_embedding_arrays_are_excluded_from_exported_payloads() -> None:
+    payload = sanitize_payload(
+        {
+            "relationship_id": "r1",
+            "embedding": [0.1] * 12,
+            "nested": {"sapbert_embedding": [0.2] * 12},
+            "short_numeric_list": [1, 2],
+        }
+    )
+
+    assert "embedding" not in payload
+    assert "sapbert_embedding" not in payload["nested"]
+    assert payload["short_numeric_list"] == [1, 2]
+
+
+def test_empty_projection_and_overlap_are_explicit() -> None:
+    collection = build_embedding_collection([], model_name="openai")
+
+    projection = project_embeddings(collection)
+    overlap = top_k_overlap([], [], k=10)
+
+    assert projection.rows == []
+    assert projection.parameters["embedding_dimension"] == 0
+    assert overlap["jaccard"] == 1.0
+    assert math.isnan(nearest_neighbor_jaccard({}, {}, k=5)["mean_jaccard"])

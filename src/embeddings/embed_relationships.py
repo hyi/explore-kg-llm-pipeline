@@ -3,7 +3,6 @@ import math
 from functools import lru_cache
 from pathlib import Path
 
-from langchain_community.vectorstores import Neo4jVector
 from langchain_core.documents import Document
 from neo4j import GraphDatabase
 
@@ -16,6 +15,18 @@ from src.embeddings.embedding_utils import (
     get_embedding_index_suffix,
     get_embedding_property,
 )
+
+try:
+    from langchain_community.vectorstores import Neo4jVector
+except ImportError:
+
+    class Neo4jVector:  # type: ignore[no-redef]
+        @staticmethod
+        def from_existing_relationship_index(**_kwargs):
+            raise ImportError(
+                "Neo4jVector is not available from langchain_community.vectorstores; "
+                "using scan-based relationship retrieval fallback."
+            )
 
 SEMANTIC_TEXT_CYPHER_PATH = (
     Path(__file__).resolve().parents[1]
@@ -104,6 +115,8 @@ def _relationship_stores(model: str | None = None):
                     "index_name": index_name,
                 }
                 break
+            except ImportError:
+                return {}
             except ValueError as exc:
                 if "does not exist" not in str(exc).lower():
                     raise
