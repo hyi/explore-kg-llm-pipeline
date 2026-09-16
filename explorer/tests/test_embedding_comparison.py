@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import math
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,13 +12,17 @@ from analysis.embedding_comparison import (
     InconsistentEmbeddingDimensionError,
     MissingRelationshipIdError,
     RetrievalResultSet,
+    add_query_projection_marker,
     apply_query_highlights,
     build_embedding_collection,
     build_retrieval_comparison_table,
     compare_query_neighborhoods,
+    create_neighbor_agreement_figure,
     create_projection_figure,
     deduplicate_exact_duplicate_rows,
+    load_retrieval_result_sets_from_path_search_cache,
     match_embedding_collections,
+    nearest_neighbor_agreement_rows,
     nearest_neighbor_jaccard,
     nearest_neighbors,
     project_embeddings,
@@ -223,6 +230,59 @@ def test_projection_figure_uses_same_marker_shape_and_disables_hover() -> None:
     assert figure.layout.legend.title.text == "predicate_family"
 
 
+def test_query_projection_marker_is_distinct_and_projected_with_edges() -> None:
+    collection = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0]),
+            row("r2", [0.0, 1.0]),
+        ],
+        model_name="openai",
+    )
+    projection = project_embeddings(collection, method="pca")
+
+    rows = add_query_projection_marker(
+        projection.rows,
+        collection,
+        [1.0, 0.0],
+        query="gene query",
+    )
+    figure = create_projection_figure([{"rows": rows}])
+    query_row = rows[-1]
+
+    assert query_row["relationship_id"] == "query"
+    assert query_row["is_query_marker"] is True
+    assert query_row["query_text"] == "gene query"
+    assert figure.data[-1].name == "input query"
+    assert figure.data[-1].marker.symbol == "star-diamond"
+
+
+def test_umap_projection_uses_cosine_metric(monkeypatch) -> None:
+    captured = {}
+
+    class FakeUMAP:
+        def __init__(self, *, n_components, random_state, metric):
+            captured["n_components"] = n_components
+            captured["random_state"] = random_state
+            captured["metric"] = metric
+
+        def fit_transform(self, matrix):
+            return [[float(index), 0.0] for index, _row in enumerate(matrix)]
+
+    monkeypatch.setitem(sys.modules, "umap", SimpleNamespace(UMAP=FakeUMAP))
+    collection = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0]),
+            row("r2", [0.0, 1.0]),
+        ],
+        model_name="openai",
+    )
+
+    projection = project_embeddings(collection, method="umap", seed=42)
+
+    assert captured == {"n_components": 2, "random_state": 42, "metric": "cosine"}
+    assert projection.parameters["metric"] == "cosine"
+
+
 def test_projection_html_includes_click_detail_handler() -> None:
     collection = build_embedding_collection([row("r1", [1.0, 0.0])], model_name="openai")
     projection = project_embeddings(collection)
@@ -230,8 +290,30 @@ def test_projection_html_includes_click_detail_handler() -> None:
     html = projection_figure_html([projection])
 
     assert "plotly_click" in html
+    assert "selectedpoints" in html
+    assert "Clear selection" in html
+    assert "selectedRelationshipId === relationshipId" in html
     assert "Click a point to inspect relationship details." in html
     assert "relationship_id: r1" in html
+    assert '"r1","relationship_id: r1' in html
+
+
+def test_neighbor_agreement_rows_support_visual_summary() -> None:
+    collection = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0], predicate="biolink:affects"),
+            row("r2", [0.0, 1.0], predicate="biolink:treats"),
+        ],
+        model_name="openai",
+    )
+
+    rows = nearest_neighbor_agreement_rows(collection, {"k": 2, "per_edge": {"r2": 1.0, "r1": 0.0}})
+    figure = create_neighbor_agreement_figure(rows)
+
+    assert [item["relationship_id"] for item in rows] == ["r1", "r2"]
+    assert rows[0]["neighbor_jaccard"] == 0.0
+    assert rows[0]["predicate_family"] == "regulation"
+    assert len(figure.data) == 2
 
 
 def test_retrieval_comparison_table_retains_mode_and_result_type_labels() -> None:
@@ -258,6 +340,45 @@ def test_retrieval_comparison_table_retains_mode_and_result_type_labels() -> Non
     assert table[0]["retrieval_model"] == "openai"
     assert table[0]["result_set_type"] == "final_anchor"
     assert "embedding" not in table[0]["metadata"]
+
+
+def test_path_search_cache_diagnostics_load_as_retrieval_result_sets(tmp_path) -> None:
+    cache_path = tmp_path / "path_search_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "entries": {
+                    "cache-key": {
+                        "key_payload": {
+                            "query": "genes in cancer",
+                            "relationship_k": 5,
+                            "options": {
+                                "embedding_provider": "openai",
+                                "retrieval": {"mode": "hybrid"},
+                            },
+                        },
+                        "metadata": {
+                            "retrieval_diagnostics": {
+                                "retrieval_model": "openai",
+                                "retrieval": {"retrieval_mode": "hybrid"},
+                                "raw_semantic_candidates": [{"relationship_identity": "r1", "semantic_score": 0.9}],
+                                "reranked_candidates": [{"relationship_identity": "r1", "anchor_score": 1.0}],
+                                "selected_anchors": [{"relationship_identity": "r1", "anchor_score": 1.0}],
+                            }
+                        },
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result_sets = load_retrieval_result_sets_from_path_search_cache(cache_path)
+    table = build_retrieval_comparison_table(result_sets)
+
+    assert [result.result_set_type for result in result_sets] == ["raw", "reranked", "final_anchor"]
+    assert {row["retrieval_mode"] for row in table} == {"hybrid"}
+    assert {row["retrieval_model"] for row in table} == {"openai"}
 
 
 def test_same_publication_fraction_is_calculated_correctly() -> None:

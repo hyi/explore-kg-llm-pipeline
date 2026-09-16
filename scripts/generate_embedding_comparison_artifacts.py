@@ -14,12 +14,14 @@ from analysis.embedding_comparison import (
     comparison_manifest,
     deduplicate_exact_duplicate_rows,
     match_embedding_collections,
+    nearest_neighbor_agreement_rows,
     nearest_neighbor_jaccard,
     nearest_neighbors,
     project_embeddings,
     read_jsonl_rows,
     same_metadata_fraction,
     write_json,
+    write_neighbor_agreement_html,
     write_projection_html,
     write_rows_csv,
 )
@@ -86,9 +88,10 @@ def generate_artifacts(args: argparse.Namespace) -> dict:
 
     openai_neighbors = nearest_neighbors(openai_edges, k=args.top_k, relationship_ids=matched.relationship_ids)
     sapbert_neighbors = nearest_neighbors(sapbert_edges, k=args.top_k, relationship_ids=matched.relationship_ids)
+    nearest_neighbor_agreement = nearest_neighbor_jaccard(openai_neighbors, sapbert_neighbors, k=args.top_k)
     neighbor_metrics = {
         "top_k": args.top_k,
-        "nearest_neighbor_jaccard": _json_safe(nearest_neighbor_jaccard(openai_neighbors, sapbert_neighbors, k=args.top_k)),
+        "nearest_neighbor_jaccard": _json_safe(nearest_neighbor_agreement),
         "openai_same_publication_fraction": _json_safe(
             same_metadata_fraction(openai_edges, openai_neighbors, metadata_field="publication_id", k=args.top_k)
         ),
@@ -103,6 +106,17 @@ def generate_artifacts(args: argparse.Namespace) -> dict:
         ),
     }
     write_json(neighbor_metrics, output_dir / "nearest_neighbor_metrics.json")
+    agreement_rows = nearest_neighbor_agreement_rows(openai_edges, nearest_neighbor_agreement)
+    write_rows_csv(agreement_rows, output_dir / "nearest_neighbor_agreement_rows.csv")
+    agreement_html_path = None
+    try:
+        agreement_html_path = write_neighbor_agreement_html(
+            agreement_rows,
+            output_dir / "nearest_neighbor_agreement.html",
+            title=f"OpenAI/SapBERT top-{args.top_k} nearest-neighbor agreement",
+        )
+    except Exception as exc:  # noqa: BLE001 - HTML output is optional; CSV/JSON artifacts still matter.
+        agreement_html_path = f"not generated: {type(exc).__name__}: {exc}"
 
     manifest = comparison_manifest(
         collections=[openai_edges, sapbert_edges],
@@ -124,6 +138,8 @@ def generate_artifacts(args: argparse.Namespace) -> dict:
         "projection_rows": str(output_dir / f"{args.projection_method}_projection_rows.csv"),
         "projection_html": str(html_path),
         "nearest_neighbor_metrics": str(output_dir / "nearest_neighbor_metrics.json"),
+        "nearest_neighbor_agreement_rows": str(output_dir / "nearest_neighbor_agreement_rows.csv"),
+        "nearest_neighbor_agreement_html": str(agreement_html_path),
     }
     manifest["metadata_limitations"] = metadata_limitations(openai_edges.records)
     write_json(manifest, output_dir / "manifest.json")

@@ -369,6 +369,34 @@ def nearest_neighbor_jaccard(
     }
 
 
+def nearest_neighbor_agreement_rows(
+    collection: EmbeddingCollection,
+    neighbor_agreement: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    per_edge = neighbor_agreement.get("per_edge", neighbor_agreement)
+    if not isinstance(per_edge, Mapping):
+        raise EmbeddingComparisonError("Neighbor agreement must be a mapping or contain a 'per_edge' mapping.")
+
+    records_by_id = collection.by_id()
+    rows = []
+    for relationship_id, value in sorted(per_edge.items(), key=lambda item: (float(item[1]), str(item[0]))):
+        metadata = records_by_id.get(str(relationship_id), EmbeddingRecord(str(relationship_id), collection.model_name, (), {})).metadata
+        rows.append(
+            {
+                "relationship_id": str(relationship_id),
+                "neighbor_jaccard": float(value),
+                "model_reference": collection.model_name,
+                "publication_id": publication_identity(metadata),
+                "predicate": metadata.get("predicate"),
+                "predicate_family": metadata.get("predicate_family") or predicate_family(metadata.get("predicate")),
+                "subject": _first_present(metadata, "subject", "subject_name", "original_subject", "llm_subject"),
+                "object": _first_present(metadata, "object", "object_name", "original_object", "llm_object"),
+                "semantic_text": _truncate_text(metadata.get("semantic_text"), max_length=320),
+            }
+        )
+    return rows
+
+
 def rank_correlation_shared_candidates(
     left_results: Sequence[Any],
     right_results: Sequence[Any],
@@ -523,7 +551,7 @@ def project_embeddings(
         parameters = {"method": "pca", "n_components": 2, "random_seed": seed}
     elif method == "umap":
         coordinates = _umap_2d(matrix, seed=seed)
-        parameters = {"method": "umap", "n_components": 2, "random_seed": seed}
+        parameters = {"method": "umap", "n_components": 2, "random_seed": seed, "metric": "cosine"}
     else:
         raise ValueError("Projection method must be 'pca' or 'umap'.")
 
@@ -572,6 +600,66 @@ def project_embeddings(
             "max_points": max_points,
         },
     )
+
+
+def add_query_projection_marker(
+    projection_rows: Sequence[Mapping[str, Any]],
+    collection: EmbeddingCollection,
+    query_embedding: Sequence[float],
+    *,
+    query: str,
+    seed: int = DEFAULT_RANDOM_SEED,
+) -> list[dict[str, Any]]:
+    rows = [dict(row) for row in projection_rows if not row.get("is_query_marker")]
+    relationship_ids = tuple(
+        str(row["relationship_id"])
+        for row in rows
+        if row.get("relationship_id") and not row.get("is_query_marker")
+    )
+    if not relationship_ids:
+        return rows
+
+    method = str(rows[0].get("projection_method") or DEFAULT_PROJECTION_METHOD).lower()
+    query_vector = np.asarray([float(value) for value in query_embedding], dtype=float)
+    if len(query_vector) != collection.embedding_dimension:
+        raise InconsistentEmbeddingDimensionError(
+            f"Query embedding for model '{collection.model_name}' has dimension {len(query_vector)}; "
+            f"expected {collection.embedding_dimension}."
+        )
+    query_coordinate = _project_extra_vector_2d(
+        collection.matrix(relationship_ids),
+        query_vector,
+        method=method,
+        seed=seed,
+    )
+    rows.append(
+        {
+            "relationship_id": "query",
+            "model": rows[0].get("model") or collection.model_name,
+            "projection_method": method,
+            "x": float(query_coordinate[0]),
+            "y": float(query_coordinate[1]),
+            "hover": {
+                "point_type": "input query",
+                "query_text": query,
+                "model": collection.model_name,
+            },
+            "publication_id": None,
+            "predicate": "input query",
+            "predicate_family": "input query",
+            "subject": "input query",
+            "object": query,
+            "subject_prefix": "query",
+            "object_prefix": "query",
+            "endpoint_prefix_pair": "query-query",
+            "endpoint_label_pair": "query-query",
+            "is_mentions_edge": "False",
+            "relationship_kind": "input_query",
+            "is_query_marker": True,
+            "query_text": query,
+        }
+    )
+    return rows
 
 
 def side_by_side_projection(
@@ -623,7 +711,11 @@ def create_projection_figure(
         row.setdefault(color_field, row.get("hover", {}).get(color_field))
 
     models = _ordered_unique(row.get("model", "unknown") for row in rows)
-    categories = _ordered_unique(row.get(color_field) or "missing" for row in rows)
+    categories = _ordered_unique(
+        row.get(color_field) or "missing"
+        for row in rows
+        if not row.get("is_query_marker")
+    )
     color_map = {
         category: qualitative.Plotly[index % len(qualitative.Plotly)]
         for index, category in enumerate(categories)
@@ -636,8 +728,9 @@ def create_projection_figure(
     )
     for col_index, model in enumerate(models, start=1):
         model_rows = [row for row in rows if row.get("model", "unknown") == model]
+        edge_rows = [row for row in model_rows if not row.get("is_query_marker")]
         for category in categories:
-            category_rows = [row for row in model_rows if (row.get(color_field) or "missing") == category]
+            category_rows = [row for row in edge_rows if (row.get(color_field) or "missing") == category]
             if not category_rows:
                 continue
             figure.add_trace(
@@ -648,10 +741,7 @@ def create_projection_figure(
                     name=str(category),
                     legendgroup=str(category),
                     showlegend=col_index == 1,
-                    customdata=[
-                        [_click_detail_text(row, color_field=color_field)]
-                        for row in category_rows
-                    ],
+                    customdata=[_point_customdata(row, color_field=color_field) for row in category_rows],
                     hoverinfo="none",
                     marker={
                         "symbol": "circle",
@@ -665,7 +755,7 @@ def create_projection_figure(
                 col=col_index,
             )
 
-        highlighted_rows = [row for row in model_rows if row.get("is_highlighted")]
+        highlighted_rows = [row for row in edge_rows if row.get("is_highlighted")]
         if highlighted_rows:
             figure.add_trace(
                 go.Scatter(
@@ -680,16 +770,39 @@ def create_projection_figure(
                         for row in highlighted_rows
                     ],
                     textposition="top center",
-                    customdata=[
-                        [_click_detail_text(row, color_field=color_field)]
-                        for row in highlighted_rows
-                    ],
+                    customdata=[_point_customdata(row, color_field=color_field) for row in highlighted_rows],
                     hoverinfo="none",
                     marker={
                         "symbol": "circle-open",
                         "size": 13,
                         "color": "black",
                         "line": {"width": 2},
+                    },
+                ),
+                row=1,
+                col=col_index,
+            )
+
+        query_rows = [row for row in model_rows if row.get("is_query_marker")]
+        if query_rows:
+            figure.add_trace(
+                go.Scatter(
+                    x=[row["x"] for row in query_rows],
+                    y=[row["y"] for row in query_rows],
+                    mode="markers+text",
+                    name="input query",
+                    legendgroup="input query",
+                    showlegend=col_index == 1,
+                    text=["Q" for _row in query_rows],
+                    textposition="middle center",
+                    customdata=[_point_customdata(row, color_field=color_field) for row in query_rows],
+                    hoverinfo="none",
+                    marker={
+                        "symbol": "star-diamond",
+                        "size": 22,
+                        "color": "#d62728",
+                        "opacity": 1.0,
+                        "line": {"width": 2, "color": "#111111"},
                     },
                 ),
                 row=1,
@@ -720,6 +833,110 @@ def create_projection_figure(
     return figure
 
 
+def create_neighbor_agreement_figure(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    title: str = "Nearest-neighbor agreement by relationship",
+) -> Any:
+    try:
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+    except ImportError as exc:  # pragma: no cover - optional presentation dependency.
+        raise ProjectionUnavailableError("Plotly is required to create interactive HTML figures.") from exc
+
+    values = [float(row["neighbor_jaccard"]) for row in rows if row.get("neighbor_jaccard") is not None]
+    figure = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.09,
+        row_heights=[0.35, 0.65],
+        subplot_titles=["Distribution", "Per-edge values by predicate family"],
+    )
+    figure.add_trace(
+        go.Histogram(
+            x=values,
+            nbinsx=20,
+            name="edge count",
+            marker={"color": "#4c78a8"},
+        ),
+        row=1,
+        col=1,
+    )
+    figure.add_trace(
+        go.Scatter(
+            x=values,
+            y=[str(row.get("predicate_family") or "missing") for row in rows],
+            mode="markers",
+            name="relationship",
+            customdata=[[_click_detail_text(row, color_field="neighbor_jaccard")] for row in rows],
+            hoverinfo="none",
+            marker={
+                "symbol": "circle",
+                "size": 7,
+                "opacity": 0.62,
+                "color": values,
+                "colorscale": "Viridis",
+                "cmin": 0,
+                "cmax": 1,
+                "colorbar": {"title": "Jaccard"},
+            },
+        ),
+        row=2,
+        col=1,
+    )
+    mean_value = sum(values) / len(values) if values else math.nan
+    if not math.isnan(mean_value):
+        figure.add_vline(
+            x=mean_value,
+            line_dash="dash",
+            line_color="#222222",
+            annotation_text=f"mean={mean_value:.3f}",
+            annotation_position="top right",
+        )
+    figure.update_layout(
+        title=title,
+        clickmode="event+select",
+        showlegend=False,
+        annotations=[
+            {
+                "text": (
+                    "Jaccard compares each edge's top-k nearest-neighbor set across models. "
+                    "0 means no shared neighbors; 1 means identical top-k neighbor membership."
+                ),
+                "xref": "paper",
+                "yref": "paper",
+                "x": 0,
+                "y": -0.2,
+                "showarrow": False,
+                "align": "left",
+            }
+        ],
+    )
+    figure.update_xaxes(range=[-0.02, 1.02], title_text="OpenAI/SapBERT nearest-neighbor Jaccard")
+    figure.update_yaxes(title_text="", row=2, col=1)
+    return figure
+
+
+def write_neighbor_agreement_html(
+    rows: Sequence[Mapping[str, Any]],
+    path: str | Path,
+    *,
+    title: str = "Nearest-neighbor agreement by relationship",
+) -> Path:
+    output_path = Path(path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    figure = create_neighbor_agreement_figure(rows, title=title)
+    output_path.write_text(
+        figure.to_html(
+            include_plotlyjs="cdn",
+            full_html=True,
+            post_script=_click_detail_post_script(),
+        )
+    )
+    return output_path
+
+
 def write_projection_html(
     projections: Sequence[ProjectionResult | Mapping[str, Any]],
     path: str | Path,
@@ -746,7 +963,7 @@ def projection_figure_html(
     return figure.to_html(
         include_plotlyjs="cdn",
         full_html=full_html,
-        post_script=_click_detail_post_script(),
+        post_script=_click_detail_post_script(link_by_relationship_id=True),
     )
 
 
@@ -800,6 +1017,69 @@ def build_retrieval_comparison_table(result_sets: Sequence[RetrievalResultSet]) 
             )
         )
     return table
+
+
+def load_retrieval_result_sets_from_path_search_cache(
+    path: str | Path = "/tmp/kg_explorer/path_search_cache.json",
+) -> list[RetrievalResultSet]:
+    cache_path = Path(path)
+    if not cache_path.exists():
+        return []
+
+    with cache_path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    entries = payload.get("entries", {})
+    if not isinstance(entries, Mapping):
+        return []
+
+    result_sets: list[RetrievalResultSet] = []
+    for entry in entries.values():
+        if not isinstance(entry, Mapping):
+            continue
+        key_payload = entry.get("key_payload", {})
+        metadata = entry.get("metadata", {})
+        if not isinstance(key_payload, Mapping) or not isinstance(metadata, Mapping):
+            continue
+
+        query = str(key_payload.get("query") or "")
+        options = key_payload.get("options", {})
+        retrieval_diagnostics = metadata.get("retrieval_diagnostics", {})
+        if not isinstance(options, Mapping) or not isinstance(retrieval_diagnostics, Mapping):
+            continue
+
+        retrieval_options = options.get("retrieval", {})
+        retrieval_metadata = retrieval_diagnostics.get("retrieval", {})
+        retrieval_mode = _first_present(
+            retrieval_metadata if isinstance(retrieval_metadata, Mapping) else {},
+            "retrieval_mode",
+            default=None,
+        ) or _first_present(
+            retrieval_options if isinstance(retrieval_options, Mapping) else {},
+            "mode",
+            default="unknown",
+        )
+        model_name = str(retrieval_diagnostics.get("retrieval_model") or options.get("embedding_provider") or "")
+        model_name = model_name or None
+
+        for result_set_type, keys in (
+            ("raw", ("raw_semantic_candidates", "raw_candidates")),
+            ("reranked", ("reranked_candidates",)),
+            ("final_anchor", ("selected_anchors",)),
+        ):
+            rows = _first_sequence(retrieval_diagnostics, keys)
+            if not rows:
+                continue
+            result_sets.append(
+                result_set_from_rows(
+                    query=query,
+                    retrieval_mode=str(retrieval_mode),
+                    rows=rows,
+                    model_name=model_name,
+                    result_set_type=result_set_type,
+                )
+            )
+    return result_sets
 
 
 def apply_query_highlights(
@@ -996,20 +1276,24 @@ def _cosine_similarity_matrix(matrix: np.ndarray) -> np.ndarray:
 
 
 def _pca_2d(matrix: np.ndarray) -> np.ndarray:
+    mean, components = _pca_fit_2d(matrix)
     if matrix.size == 0:
         return np.empty((0, 2), dtype=float)
+    return (matrix - mean) @ components
+
+
+def _pca_fit_2d(matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    if matrix.size == 0:
+        return np.empty((0,), dtype=float), np.empty((0, 2), dtype=float)
+    mean = matrix.mean(axis=0, keepdims=True)
     if matrix.shape[0] == 1:
-        return np.zeros((1, 2), dtype=float)
-    centered = matrix - matrix.mean(axis=0, keepdims=True)
+        return mean, np.zeros((matrix.shape[1], 2), dtype=float)
+    centered = matrix - mean
     _u, _s, vt = np.linalg.svd(centered, full_matrices=False)
     components = vt[:2].T
     if components.shape[1] < 2:
         components = np.pad(components, ((0, 0), (0, 2 - components.shape[1])))
-    components = _stabilize_component_signs(centered, components)
-    coordinates = centered @ components
-    if coordinates.shape[1] < 2:
-        coordinates = np.pad(coordinates, ((0, 0), (0, 2 - coordinates.shape[1])))
-    return coordinates[:, :2]
+    return mean, _stabilize_component_signs(centered, components)
 
 
 def _umap_2d(matrix: np.ndarray, *, seed: int) -> np.ndarray:
@@ -1019,8 +1303,31 @@ def _umap_2d(matrix: np.ndarray, *, seed: int) -> np.ndarray:
         raise ProjectionUnavailableError("Install umap-learn to use UMAP projections.") from exc
     if matrix.size == 0:
         return np.empty((0, 2), dtype=float)
-    reducer = umap.UMAP(n_components=2, random_state=seed)
+    reducer = umap.UMAP(n_components=2, random_state=seed, metric="cosine")
     return np.asarray(reducer.fit_transform(matrix), dtype=float)
+
+
+def _project_extra_vector_2d(
+    matrix: np.ndarray,
+    vector: np.ndarray,
+    *,
+    method: str,
+    seed: int,
+) -> np.ndarray:
+    if matrix.size == 0:
+        return np.zeros(2, dtype=float)
+    if method == "pca":
+        mean, components = _pca_fit_2d(matrix)
+        return ((vector.reshape(1, -1) - mean) @ components)[0]
+    if method == "umap":
+        try:
+            import umap
+        except ImportError as exc:  # pragma: no cover - optional exploratory dependency.
+            raise ProjectionUnavailableError("Install umap-learn to use UMAP projections.") from exc
+        reducer = umap.UMAP(n_components=2, random_state=seed, metric="cosine")
+        reducer.fit(matrix)
+        return np.asarray(reducer.transform(vector.reshape(1, -1)), dtype=float)[0]
+    raise ValueError("Projection method must be 'pca' or 'umap'.")
 
 
 def _stabilize_component_signs(matrix: np.ndarray, components: np.ndarray) -> np.ndarray:
@@ -1129,7 +1436,10 @@ def _click_detail_text(row: Mapping[str, Any], *, color_field: str) -> str:
     detail = {
         "relationship_id": row.get("relationship_id"),
         "model": row.get("model"),
+        "point_type": row.get("relationship_kind"),
+        "query_text": row.get("query_text"),
         color_field: row.get(color_field),
+        "neighbor_jaccard": row.get("neighbor_jaccard"),
         "query_rank": row.get("highlight_rank"),
         "subject": row.get("subject") or row.get("hover", {}).get("subject"),
         "object": row.get("object") or row.get("hover", {}).get("object"),
@@ -1141,31 +1451,89 @@ def _click_detail_text(row: Mapping[str, Any], *, color_field: str) -> str:
     return "\n".join(f"{key}: {value}" for key, value in detail.items() if value not in {None, ""})
 
 
-def _click_detail_post_script() -> str:
-    return """
+def _point_customdata(row: Mapping[str, Any], *, color_field: str) -> list[str]:
+    return [
+        str(row.get("relationship_id") or ""),
+        _click_detail_text(row, color_field=color_field),
+    ]
+
+
+def _click_detail_post_script(*, link_by_relationship_id: bool = False) -> str:
+    linked_selection = ""
+    if link_by_relationship_id:
+        linked_selection = """
+        const relationshipId = Array.isArray(point.customdata) ? point.customdata[0] : '';
+        if (relationshipId) {
+          if (selectedRelationshipId === relationshipId) {
+            clearSelection();
+            return;
+          }
+          selectedRelationshipId = relationshipId;
+          const selectedPoints = plot.data.map(function(trace) {
+            const matches = [];
+            const customdata = trace.customdata || [];
+            for (let i = 0; i < customdata.length; i += 1) {
+              const row = customdata[i];
+              const rowId = Array.isArray(row) ? row[0] : '';
+              if (rowId === relationshipId) matches.push(i);
+            }
+            return matches;
+          });
+          Plotly.restyle(plot, {
+            selectedpoints: selectedPoints,
+            selected: {marker: {opacity: 1, size: 13, line: {width: 2, color: '#111111'}}},
+            unselected: {marker: {opacity: 0.18}}
+          });
+        }
+        """
+    script = """
     (function() {
       const plot = document.getElementById('{plot_id}');
       if (!plot) return;
+      let selectedRelationshipId = null;
+      const defaultDetailText = 'Click a point to inspect relationship details. Click the selected point again or use Clear selection to reset.';
+      const clearButton = document.createElement('button');
+      clearButton.textContent = 'Clear selection';
+      clearButton.type = 'button';
+      clearButton.style.margin = '14px 0 0 0';
+      clearButton.style.padding = '6px 10px';
+      clearButton.style.border = '1px solid #d0d7de';
+      clearButton.style.borderRadius = '6px';
+      clearButton.style.background = '#ffffff';
+      clearButton.style.cursor = 'pointer';
       const detail = document.createElement('pre');
-      detail.textContent = 'Click a point to inspect relationship details.';
+      detail.textContent = defaultDetailText;
       detail.style.whiteSpace = 'pre-wrap';
       detail.style.border = '1px solid #d0d7de';
       detail.style.borderRadius = '8px';
       detail.style.padding = '12px';
-      detail.style.margin = '14px 0 0 0';
+      detail.style.margin = '8px 0 0 0';
       detail.style.maxHeight = '220px';
       detail.style.overflow = 'auto';
       detail.style.fontSize = '12px';
       detail.style.background = '#f6f8fa';
+      function clearSelection() {
+        selectedRelationshipId = null;
+        detail.textContent = defaultDetailText;
+        if (plot.data && plot.data.length) {
+          Plotly.restyle(plot, 'selectedpoints', plot.data.map(function() { return null; }));
+        }
+      }
+      clearButton.addEventListener('click', clearSelection);
       plot.parentNode.insertBefore(detail, plot.nextSibling);
+      plot.parentNode.insertBefore(clearButton, detail);
       plot.on('plotly_click', function(eventData) {
         if (!eventData || !eventData.points || !eventData.points.length) return;
         const point = eventData.points[0];
-        const text = point.customdata && point.customdata.length ? point.customdata[0] : '';
+        const text = Array.isArray(point.customdata)
+          ? (point.customdata.length > 1 ? point.customdata[1] : point.customdata[0])
+          : '';
         detail.textContent = text || 'No detail payload available for this point.';
+        __LINKED_SELECTION__
       });
     })();
     """
+    return script.replace("__LINKED_SELECTION__", linked_selection)
 
 
 def _with_projection_highlight(projection: ProjectionResult, highlight_ids: set[str]) -> dict[str, Any]:
@@ -1204,6 +1572,14 @@ def _ordered_unique(values: Iterable[Any]) -> list[Any]:
         seen.add(value)
         ordered.append(value)
     return ordered
+
+
+def _first_sequence(mapping: Mapping[str, Any], keys: Sequence[str]) -> Sequence[Mapping[str, Any]]:
+    for key in keys:
+        value = mapping.get(key)
+        if isinstance(value, Sequence) and not isinstance(value, str):
+            return value
+    return ()
 
 
 def _looks_like_vector(value: Any) -> bool:
