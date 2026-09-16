@@ -78,7 +78,7 @@ def generate_artifacts(args: argparse.Namespace) -> dict:
         html_path = write_projection_html(
             [openai_projection, sapbert_projection],
             output_dir / f"{args.projection_method}_projection.html",
-            color_field="predicate_family",
+            color_field=args.color_field,
             title="LitCoin relationship embedding comparison",
         )
     except Exception as exc:  # noqa: BLE001 - HTML output is optional; CSV/JSON artifacts still matter.
@@ -180,6 +180,15 @@ def parse_args() -> argparse.Namespace:
         help="Directory for generated CSV, JSON, and HTML artifacts.",
     )
     parser.add_argument("--projection-method", choices=("pca", "umap"), default="pca")
+    parser.add_argument(
+        "--color-field",
+        default="predicate_family",
+        help=(
+            "Projection row field used for color. Useful values include predicate, "
+            "predicate_family, relationship_kind, is_mentions_edge, endpoint_prefix_pair, "
+            "endpoint_label_pair, and publication_id."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=13)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument(

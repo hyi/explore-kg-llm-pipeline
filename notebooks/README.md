@@ -17,11 +17,11 @@ Open `notebooks/embedding_comparison.ipynb` and select the
 The kernel command uses:
 
 ```bash
-uv --directory /home/hongyi/explore-kg-llm-pipeline run --frozen --with ipykernel --with nbformat python -m ipykernel_launcher
+uv --directory /home/hongyi/explore-kg-llm-pipeline run --frozen --with ipykernel --with nbformat --with umap-learn python -m ipykernel_launcher
 ```
 
-This installs only kernel-side packages needed by `ipykernel` and Plotly
-notebook rendering in the `uv` environment. Do not install `jupyter`,
+This installs only kernel-side packages needed by `ipykernel`, Plotly notebook
+rendering, and UMAP in the `uv` environment. Do not install `jupyter`,
 `notebook`, or `jupyterlab` into the project `.venv` unless there is a separate
 reason to debug Jupyter Server itself.
 

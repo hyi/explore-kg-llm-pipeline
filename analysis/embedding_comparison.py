@@ -138,6 +138,18 @@ class RetrievalResultSet:
     result_set_type: str = "raw"
 
 
+@dataclass(frozen=True)
+class QueryNeighborhoodComparison:
+    query: str
+    top_k: int
+    left_model: str
+    right_model: str
+    left_results: list[dict[str, Any]]
+    right_results: list[dict[str, Any]]
+    overlap: dict[str, Any]
+    rank_correlation: dict[str, Any]
+
+
 def load_embedding_jsonl(
     path: str | Path,
     *,
@@ -384,6 +396,81 @@ def rank_correlation_shared_candidates(
     }
 
 
+def query_nearest_relationships(
+    collection: EmbeddingCollection,
+    query_embedding: Sequence[float],
+    *,
+    k: int,
+    relationship_ids: Sequence[str] | None = None,
+) -> list[dict[str, Any]]:
+    ids = tuple(relationship_ids) if relationship_ids is not None else collection.ids
+    if k <= 0 or not ids:
+        return []
+    query_vector = np.asarray([float(value) for value in query_embedding], dtype=float)
+    if len(query_vector) != collection.embedding_dimension:
+        raise InconsistentEmbeddingDimensionError(
+            f"Query embedding for model '{collection.model_name}' has dimension {len(query_vector)}; "
+            f"expected {collection.embedding_dimension}."
+        )
+
+    matrix = collection.matrix(ids)
+    query_norm = float(np.linalg.norm(query_vector))
+    matrix_norms = np.linalg.norm(matrix, axis=1)
+    safe_denominator = np.where(matrix_norms == 0, 1.0, matrix_norms) * (query_norm or 1.0)
+    similarities = (matrix @ query_vector) / safe_denominator
+    if query_norm == 0.0:
+        similarities = np.zeros_like(similarities)
+    similarities = np.where(matrix_norms == 0, 0.0, similarities)
+
+    records_by_id = collection.by_id()
+    ranked = []
+    for relationship_id, similarity in zip(ids, similarities, strict=True):
+        metadata = records_by_id[relationship_id].metadata
+        ranked.append(
+            {
+                "relationship_id": relationship_id,
+                "model": collection.model_name,
+                "similarity": float(similarity),
+                "publication_id": publication_identity(metadata),
+                "predicate": metadata.get("predicate"),
+                "predicate_family": metadata.get("predicate_family") or predicate_family(metadata.get("predicate")),
+                "subject": _first_present(metadata, "subject", "subject_name", "original_subject", "llm_subject"),
+                "object": _first_present(metadata, "object", "object_name", "original_object", "llm_object"),
+                "semantic_text": metadata.get("semantic_text"),
+                "metadata": sanitize_payload(metadata),
+            }
+        )
+    ranked.sort(key=lambda item: (-item["similarity"], item["relationship_id"]))
+    for rank, item in enumerate(ranked[:k], start=1):
+        item["rank"] = rank
+    return ranked[:k]
+
+
+def compare_query_neighborhoods(
+    *,
+    query: str,
+    left: EmbeddingCollection,
+    right: EmbeddingCollection,
+    left_query_embedding: Sequence[float],
+    right_query_embedding: Sequence[float],
+    k: int,
+    relationship_ids: Sequence[str] | None = None,
+) -> QueryNeighborhoodComparison:
+    ids = tuple(relationship_ids) if relationship_ids is not None else match_embedding_collections(left, right).relationship_ids
+    left_results = query_nearest_relationships(left, left_query_embedding, k=k, relationship_ids=ids)
+    right_results = query_nearest_relationships(right, right_query_embedding, k=k, relationship_ids=ids)
+    return QueryNeighborhoodComparison(
+        query=query,
+        top_k=k,
+        left_model=left.model_name,
+        right_model=right.model_name,
+        left_results=left_results,
+        right_results=right_results,
+        overlap=top_k_overlap(left_results, right_results, k=k),
+        rank_correlation=rank_correlation_shared_candidates(left_results, right_results, k=k),
+    )
+
+
 def same_metadata_fraction(
     collection: EmbeddingCollection,
     neighbors: Mapping[str, Sequence[Neighbor | str]],
@@ -445,6 +532,12 @@ def project_embeddings(
     for index, relationship_id in enumerate(selected_ids):
         metadata = records_by_id[relationship_id].metadata
         hover_metadata = _select_hover_metadata(metadata, hover_fields)
+        subject = _first_present(metadata, "subject", "subject_name", "original_subject", "llm_subject")
+        obj = _first_present(metadata, "object", "object_name", "original_object", "llm_object")
+        subject_prefix = _curie_prefix(subject)
+        object_prefix = _curie_prefix(obj)
+        candidate_predicate = metadata.get("predicate")
+        is_mentions_edge = candidate_predicate == "biolink:mentions"
         rows.append(
             {
                 "relationship_id": relationship_id,
@@ -454,10 +547,16 @@ def project_embeddings(
                 "y": float(coordinates[index, 1]) if len(coordinates) else 0.0,
                 "hover": hover_metadata,
                 "publication_id": publication_identity(metadata),
-                "predicate": metadata.get("predicate"),
-                "predicate_family": metadata.get("predicate_family") or predicate_family(metadata.get("predicate")),
-                "subject": _first_present(metadata, "subject", "subject_name", "original_subject", "llm_subject"),
-                "object": _first_present(metadata, "object", "object_name", "original_object", "llm_object"),
+                "predicate": candidate_predicate,
+                "predicate_family": metadata.get("predicate_family") or predicate_family(candidate_predicate),
+                "subject": subject,
+                "object": obj,
+                "subject_prefix": subject_prefix,
+                "object_prefix": object_prefix,
+                "endpoint_prefix_pair": f"{subject_prefix}-{object_prefix}",
+                "endpoint_label_pair": _endpoint_label_pair(metadata),
+                "is_mentions_edge": str(is_mentions_edge),
+                "relationship_kind": "publication_mention" if is_mentions_edge or subject_prefix == "PMID" else "claim_edge",
             }
         )
     return ProjectionResult(
@@ -507,7 +606,9 @@ def create_projection_figure(
     title: str = "Embedding comparison",
 ) -> Any:
     try:
-        import plotly.express as px
+        import plotly.graph_objects as go
+        from plotly.colors import qualitative
+        from plotly.subplots import make_subplots
     except ImportError as exc:  # pragma: no cover - optional presentation dependency.
         raise ProjectionUnavailableError("Plotly is required to create interactive HTML figures.") from exc
 
@@ -521,23 +622,89 @@ def create_projection_figure(
         row.setdefault("hover_text", _hover_text(row.get("hover", {})))
         row.setdefault(color_field, row.get("hover", {}).get(color_field))
 
-    figure = px.scatter(
-        rows,
-        x="x",
-        y="y",
-        color=color_field,
-        symbol="model",
-        facet_col="model",
-        hover_name="relationship_id",
-        hover_data={"hover_text": True, "x": ":.3f", "y": ":.3f"},
-        title=title,
+    models = _ordered_unique(row.get("model", "unknown") for row in rows)
+    categories = _ordered_unique(row.get(color_field) or "missing" for row in rows)
+    color_map = {
+        category: qualitative.Plotly[index % len(qualitative.Plotly)]
+        for index, category in enumerate(categories)
+    }
+    figure = make_subplots(
+        rows=1,
+        cols=len(models),
+        subplot_titles=[str(model) for model in models],
+        horizontal_spacing=0.08,
     )
+    for col_index, model in enumerate(models, start=1):
+        model_rows = [row for row in rows if row.get("model", "unknown") == model]
+        for category in categories:
+            category_rows = [row for row in model_rows if (row.get(color_field) or "missing") == category]
+            if not category_rows:
+                continue
+            figure.add_trace(
+                go.Scatter(
+                    x=[row["x"] for row in category_rows],
+                    y=[row["y"] for row in category_rows],
+                    mode="markers",
+                    name=str(category),
+                    legendgroup=str(category),
+                    showlegend=col_index == 1,
+                    customdata=[
+                        [_click_detail_text(row, color_field=color_field)]
+                        for row in category_rows
+                    ],
+                    hoverinfo="none",
+                    marker={
+                        "symbol": "circle",
+                        "size": 6,
+                        "opacity": 0.72,
+                        "color": color_map[category],
+                        "line": {"width": 0},
+                    },
+                ),
+                row=1,
+                col=col_index,
+            )
+
+        highlighted_rows = [row for row in model_rows if row.get("is_highlighted")]
+        if highlighted_rows:
+            figure.add_trace(
+                go.Scatter(
+                    x=[row["x"] for row in highlighted_rows],
+                    y=[row["y"] for row in highlighted_rows],
+                    mode="markers+text",
+                    name="query top-k",
+                    legendgroup="query top-k",
+                    showlegend=col_index == 1,
+                    text=[
+                        str(row.get("highlight_rank") or "")
+                        for row in highlighted_rows
+                    ],
+                    textposition="top center",
+                    customdata=[
+                        [_click_detail_text(row, color_field=color_field)]
+                        for row in highlighted_rows
+                    ],
+                    hoverinfo="none",
+                    marker={
+                        "symbol": "circle-open",
+                        "size": 13,
+                        "color": "black",
+                        "line": {"width": 2},
+                    },
+                ),
+                row=1,
+                col=col_index,
+            )
+
     figure.update_layout(
+        title=title,
+        clickmode="event+select",
+        legend_title_text=color_field,
         annotations=[
             {
                 "text": (
                     "Each panel is projected and axis-scaled separately; compare highlighted membership and "
-                    "neighborhood patterns, not absolute coordinates or apparent spread."
+                    "neighborhood patterns, not absolute coordinates or apparent spread. Click a point for details."
                 ),
                 "xref": "paper",
                 "yref": "paper",
@@ -548,8 +715,8 @@ def create_projection_figure(
             }
         ]
     )
-    figure.update_xaxes(matches=None)
-    figure.update_yaxes(matches=None)
+    figure.update_xaxes(matches=None, showticklabels=False, title_text="")
+    figure.update_yaxes(matches=None, showticklabels=False, title_text="")
     return figure
 
 
@@ -560,11 +727,27 @@ def write_projection_html(
     color_field: str = "predicate_family",
     title: str = "Embedding comparison",
 ) -> Path:
-    figure = create_projection_figure(projections, color_field=color_field, title=title)
     output_path = Path(path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    figure.write_html(output_path, include_plotlyjs="cdn")
+    output_path.write_text(
+        projection_figure_html(projections, color_field=color_field, title=title, full_html=True)
+    )
     return output_path
+
+
+def projection_figure_html(
+    projections: Sequence[ProjectionResult | Mapping[str, Any]],
+    *,
+    color_field: str = "predicate_family",
+    title: str = "Embedding comparison",
+    full_html: bool = False,
+) -> str:
+    figure = create_projection_figure(projections, color_field=color_field, title=title)
+    return figure.to_html(
+        include_plotlyjs="cdn",
+        full_html=full_html,
+        post_script=_click_detail_post_script(),
+    )
 
 
 def normalize_result_rows(
@@ -898,6 +1081,27 @@ def _metadata_value(metadata: Mapping[str, Any], field: str) -> Any:
     return value
 
 
+def _curie_prefix(value: Any) -> str:
+    text = str(value or "")
+    if ":" not in text:
+        return "missing"
+    return text.split(":", 1)[0] or "missing"
+
+
+def _endpoint_label_pair(metadata: Mapping[str, Any]) -> str:
+    subject = _primary_label(metadata.get("subject_labels"))
+    obj = _primary_label(metadata.get("object_labels"))
+    return f"{subject}-{obj}"
+
+
+def _primary_label(value: Any) -> str:
+    if isinstance(value, list) and value:
+        return str(value[0])
+    if isinstance(value, str) and value:
+        return value
+    return "unlabeled"
+
+
 def _pearson(left: np.ndarray, right: np.ndarray) -> float:
     left_centered = left - left.mean()
     right_centered = right - right.mean()
@@ -919,6 +1123,49 @@ def _select_hover_metadata(metadata: Mapping[str, Any], fields: Sequence[str]) -
 
 def _hover_text(metadata: Mapping[str, Any]) -> str:
     return "<br>".join(f"{key}: {value}" for key, value in metadata.items())
+
+
+def _click_detail_text(row: Mapping[str, Any], *, color_field: str) -> str:
+    detail = {
+        "relationship_id": row.get("relationship_id"),
+        "model": row.get("model"),
+        color_field: row.get(color_field),
+        "query_rank": row.get("highlight_rank"),
+        "subject": row.get("subject") or row.get("hover", {}).get("subject"),
+        "object": row.get("object") or row.get("hover", {}).get("object"),
+        "predicate": row.get("predicate") or row.get("hover", {}).get("predicate"),
+        "predicate_family": row.get("predicate_family") or row.get("hover", {}).get("predicate_family"),
+        "publication_id": row.get("publication_id") or row.get("hover", {}).get("publication_id"),
+        "semantic_text": row.get("semantic_text") or row.get("hover", {}).get("semantic_text"),
+    }
+    return "\n".join(f"{key}: {value}" for key, value in detail.items() if value not in {None, ""})
+
+
+def _click_detail_post_script() -> str:
+    return """
+    (function() {
+      const plot = document.getElementById('{plot_id}');
+      if (!plot) return;
+      const detail = document.createElement('pre');
+      detail.textContent = 'Click a point to inspect relationship details.';
+      detail.style.whiteSpace = 'pre-wrap';
+      detail.style.border = '1px solid #d0d7de';
+      detail.style.borderRadius = '8px';
+      detail.style.padding = '12px';
+      detail.style.margin = '14px 0 0 0';
+      detail.style.maxHeight = '220px';
+      detail.style.overflow = 'auto';
+      detail.style.fontSize = '12px';
+      detail.style.background = '#f6f8fa';
+      plot.parentNode.insertBefore(detail, plot.nextSibling);
+      plot.on('plotly_click', function(eventData) {
+        if (!eventData || !eventData.points || !eventData.points.length) return;
+        const point = eventData.points[0];
+        const text = point.customdata && point.customdata.length ? point.customdata[0] : '';
+        detail.textContent = text || 'No detail payload available for this point.';
+      });
+    })();
+    """
 
 
 def _with_projection_highlight(projection: ProjectionResult, highlight_ids: set[str]) -> dict[str, Any]:
@@ -946,6 +1193,17 @@ def _first_present(mapping: Mapping[str, Any], *keys: str, default: Any = None) 
 
 def _normalize_key(value: Any) -> str:
     return str(value or "").casefold().strip()
+
+
+def _ordered_unique(values: Iterable[Any]) -> list[Any]:
+    seen = set()
+    ordered = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
 
 
 def _looks_like_vector(value: Any) -> bool:

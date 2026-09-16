@@ -12,11 +12,15 @@ from analysis.embedding_comparison import (
     apply_query_highlights,
     build_embedding_collection,
     build_retrieval_comparison_table,
+    compare_query_neighborhoods,
+    create_projection_figure,
     deduplicate_exact_duplicate_rows,
     match_embedding_collections,
     nearest_neighbor_jaccard,
     nearest_neighbors,
     project_embeddings,
+    projection_figure_html,
+    query_nearest_relationships,
     same_metadata_fraction,
     sanitize_payload,
     top_k_overlap,
@@ -142,6 +146,94 @@ def test_nearest_neighbor_and_top_k_overlap_metrics_return_known_values() -> Non
     assert overlap["jaccard"] == pytest.approx(1 / 3)
 
 
+def test_query_nearest_relationships_returns_known_cosine_ranking() -> None:
+    collection = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0], predicate="biolink:mentions"),
+            row("r2", [0.8, 0.2], predicate="biolink:affects"),
+            row("r3", [0.0, 1.0], predicate="biolink:treats"),
+        ],
+        model_name="openai",
+    )
+
+    results = query_nearest_relationships(collection, [1.0, 0.0], k=2)
+
+    assert [item["relationship_id"] for item in results] == ["r1", "r2"]
+    assert [item["rank"] for item in results] == [1, 2]
+    assert results[0]["similarity"] == pytest.approx(1.0)
+    assert results[0]["predicate_family"] == "unknown"
+
+
+def test_query_neighborhood_comparison_reports_overlap() -> None:
+    left = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0]),
+            row("r2", [0.8, 0.2]),
+            row("r3", [0.0, 1.0]),
+        ],
+        model_name="openai",
+    )
+    right = build_embedding_collection(
+        [
+            row("r1", [0.0, 1.0]),
+            row("r2", [1.0, 0.0]),
+            row("r3", [0.8, 0.2]),
+        ],
+        model_name="sapbert",
+    )
+
+    comparison = compare_query_neighborhoods(
+        query="test query",
+        left=left,
+        right=right,
+        left_query_embedding=[1.0, 0.0],
+        right_query_embedding=[1.0, 0.0],
+        k=2,
+    )
+
+    assert [item["relationship_id"] for item in comparison.left_results] == ["r1", "r2"]
+    assert [item["relationship_id"] for item in comparison.right_results] == ["r2", "r3"]
+    assert comparison.overlap["shared_ids"] == ["r2"]
+    assert comparison.overlap["jaccard"] == pytest.approx(1 / 3)
+
+
+def test_query_embedding_dimension_mismatch_is_reported() -> None:
+    collection = build_embedding_collection([row("r1", [1.0, 0.0])], model_name="openai")
+
+    with pytest.raises(InconsistentEmbeddingDimensionError, match="Query embedding"):
+        query_nearest_relationships(collection, [1.0], k=1)
+
+
+def test_projection_figure_uses_same_marker_shape_and_disables_hover() -> None:
+    collection = build_embedding_collection(
+        [
+            row("r1", [1.0, 0.0]),
+            row("r2", [0.0, 1.0]),
+        ],
+        model_name="openai",
+    )
+    projection = project_embeddings(collection)
+    projection.rows[0]["is_highlighted"] = True
+    projection.rows[0]["highlight_rank"] = 1
+
+    figure = create_projection_figure([projection])
+
+    assert {trace.marker.symbol for trace in figure.data} <= {"circle", "circle-open"}
+    assert all(trace.hoverinfo == "none" for trace in figure.data)
+    assert figure.layout.legend.title.text == "predicate_family"
+
+
+def test_projection_html_includes_click_detail_handler() -> None:
+    collection = build_embedding_collection([row("r1", [1.0, 0.0])], model_name="openai")
+    projection = project_embeddings(collection)
+
+    html = projection_figure_html([projection])
+
+    assert "plotly_click" in html
+    assert "Click a point to inspect relationship details." in html
+    assert "relationship_id: r1" in html
+
+
 def test_retrieval_comparison_table_retains_mode_and_result_type_labels() -> None:
     table = build_retrieval_comparison_table(
         [
@@ -208,6 +300,30 @@ def test_projection_and_sampling_are_reproducible_with_fixed_seed() -> None:
     assert first.parameters == second.parameters
     assert first.rows == second.rows
     assert len(first.rows) == 3
+
+
+def test_projection_rows_include_derived_color_fields() -> None:
+    collection = build_embedding_collection(
+        [
+            {
+                **row("r1", [1.0, 0.0], predicate="biolink:mentions"),
+                "subject": "PMID:1",
+                "object": "NCBIGene:1",
+                "subject_labels": ["biolink:Publication"],
+                "object_labels": ["biolink:Gene"],
+            }
+        ],
+        model_name="openai",
+    )
+
+    projection = project_embeddings(collection)
+
+    assert projection.rows[0]["subject_prefix"] == "PMID"
+    assert projection.rows[0]["object_prefix"] == "NCBIGene"
+    assert projection.rows[0]["endpoint_prefix_pair"] == "PMID-NCBIGene"
+    assert projection.rows[0]["endpoint_label_pair"] == "biolink:Publication-biolink:Gene"
+    assert projection.rows[0]["is_mentions_edge"] == "True"
+    assert projection.rows[0]["relationship_kind"] == "publication_mention"
 
 
 def test_query_result_highlighting_uses_stable_relationship_ids() -> None:
