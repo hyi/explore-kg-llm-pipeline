@@ -626,13 +626,7 @@ than LitCoin paths, and use autonomous agent-generated subqueries.
 
 ---
 
-## Active Workstream 2: Comparative Embedding and Retrieval Investigation
-
-Next-agent focus: implement this workstream next. Do not continue tuning
-Workstream 1 or 1B ranking, retrieval, or UI behavior unless the user
-explicitly requests it. Reuse the implemented dense, keyword, hybrid,
-graph-intent reranking, diagnostics, and cache metadata as inputs for analysis
-rather than modifying those systems.
+## Implemented Active Workstream 2: Comparative Embedding and Retrieval Investigation
 
 ### Purpose
 
@@ -796,6 +790,9 @@ settings, and limitations of the visual comparison.
 ---
 
 ## Active Workstream 3: LitCoin-to-ROBOKOP Cross-Graph Expansion
+Next-agent focus: implement this workstream next. Do not continue tuning
+Workstream 1 or 1B ranking, retrieval, or UI behavior or Workstream 2 Analysis 
+unless the user explicitly requests it. Reuse existing implementations when possible.
 
 ### Goal
 
@@ -814,8 +811,7 @@ replicate the complete ROBOKOP graph into the LitCoin Neo4j database.
 ### Integration Reference and Current Constraints
 
 RoboMCP is available at `https://github.com/cbizon/RoboMCP`, including the
-`robokop-mcp`, `nodenormalizer-mcp`, `name-resolver-mcp`, and `biolink-mcp`
-servers.
+`robokop-mcp` server for this workstream implementation. 
 
 At the inspected version, `robokop-mcp` provides:
 
