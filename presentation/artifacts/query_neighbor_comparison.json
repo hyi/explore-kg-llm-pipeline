@@ -1,0 +1,66 @@
+{
+  "overlap": {
+    "intersection_count": 7,
+    "jaccard": 0.30434782608695654,
+    "k": 15,
+    "left_ids": [
+      "95eb9fcae394a691",
+      "925e8bddcf9141bc",
+      "2fb96d28fc79f25c",
+      "0d7f58617dad9fc4",
+      "487a4888b064dc2c",
+      "2a61749591fd2113",
+      "871d44f652c1a1f0",
+      "b8dc138ace7d4842",
+      "635f087056d54a1c",
+      "1bdd04566ad37675",
+      "3a67a7734219e815",
+      "92a637f1d8fc8f75",
+      "94db0ac5a94fb177",
+      "cd3f0f41b1f8b345",
+      "0ee7f69ebd71d59d"
+    ],
+    "right_ids": [
+      "246d459ac0ee1026",
+      "95eb9fcae394a691",
+      "6362d2ef412961f9",
+      "925e8bddcf9141bc",
+      "1bdd04566ad37675",
+      "a37681c93330c750",
+      "b8dc138ace7d4842",
+      "635f087056d54a1c",
+      "3a67a7734219e815",
+      "554377d0508daa3e",
+      "6e79f0b1798e6939",
+      "21273a8ed3206bb8",
+      "92a637f1d8fc8f75",
+      "bf9daabc78e54634",
+      "4804545c604afc87"
+    ],
+    "shared_ids": [
+      "1bdd04566ad37675",
+      "3a67a7734219e815",
+      "635f087056d54a1c",
+      "925e8bddcf9141bc",
+      "92a637f1d8fc8f75",
+      "95eb9fcae394a691",
+      "b8dc138ace7d4842"
+    ],
+    "union_count": 23
+  },
+  "query": "genes involved in chemoresistance in cancer",
+  "rank_correlation": {
+    "shared_count": 7,
+    "shared_ids": [
+      "1bdd04566ad37675",
+      "3a67a7734219e815",
+      "635f087056d54a1c",
+      "925e8bddcf9141bc",
+      "92a637f1d8fc8f75",
+      "95eb9fcae394a691",
+      "b8dc138ace7d4842"
+    ],
+    "spearman": 0.8402898592489522
+  },
+  "top_k": 15
+}

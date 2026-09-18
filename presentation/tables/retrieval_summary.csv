@@ -1,0 +1,10 @@
+complete_structural_matches,partial_structural_matches,query,result_count,result_set_type,retrieval_mode,retrieval_model,semantic_fallbacks,top_anchor_score,top_predicate,top_publication_id,top_relationship_id,top_score,top_semantic_score,unique_predicate_families,unique_predicates,unique_publications
+0,8,genes involved in chemoresistance in cancer,10,final_anchor,dense,sapbert,10,0.85703125,biolink:associated_with_resistance_to,PMID:16849419,6bd941f8cfbf4dcf,0.85703125,0.70703125,7,9,8
+0,14,genes involved in chemoresistance in cancer,50,raw,dense,sapbert,50,0.5621112060546876,biolink:mentions,,95eb9fcae394a691,0.5621112060546876,0.7421112060546875,9,14,15
+0,14,genes involved in chemoresistance in cancer,50,reranked,dense,sapbert,50,0.85703125,biolink:associated_with_resistance_to,PMID:16849419,6bd941f8cfbf4dcf,0.85703125,0.70703125,9,14,15
+0,6,genes involved in chemoresistance in cancer,10,final_anchor,hybrid,sapbert,10,0.5291936820978228,biolink:affects,PMID:24632946,e5027de6c7533f28,0.5291936820978228,0.7135810852050781,6,7,9
+0,10,genes involved in chemoresistance in cancer,50,raw,hybrid,sapbert,50,0.8200000000000001,biolink:mentions,,95eb9fcae394a691,0.8200000000000001,0.7421112060546875,8,14,17
+0,10,genes involved in chemoresistance in cancer,50,reranked,hybrid,sapbert,50,0.5291936820978228,biolink:affects,PMID:24632946,e5027de6c7533f28,0.5291936820978228,0.7135810852050781,8,14,17
+0,1,genes involved in chemoresistance in cancer,10,final_anchor,keyword,sapbert,10,0.9904477611940298,biolink:related_to,PMID:17327131,1d6ae0d06812c7a4,0.9904477611940298,0.0,5,6,6
+0,1,genes involved in chemoresistance in cancer,16,raw,keyword,sapbert,16,0.8200000000000001,biolink:mentions,,5667e105e2228993,0.8200000000000001,0.0,5,7,6
+0,1,genes involved in chemoresistance in cancer,16,reranked,keyword,sapbert,16,0.9904477611940298,biolink:related_to,PMID:17327131,1d6ae0d06812c7a4,0.9904477611940298,0.0,5,7,6

@@ -1,0 +1,57 @@
+{
+  "coverage": {
+    "left_count": 2003,
+    "left_model": "openai",
+    "left_only_count": 0,
+    "left_only_ids": [],
+    "matched_count": 2003,
+    "right_count": 2003,
+    "right_model": "sapbert",
+    "right_only_count": 0,
+    "right_only_ids": [],
+    "same_population": true
+  },
+  "created_at_utc": "2026-09-16T02:01:21+00:00",
+  "embedding_arrays_included": false,
+  "input_normalization": {
+    "openai": {
+      "duplicate_id_count": 0,
+      "duplicate_ids_sample": [],
+      "exact_duplicate_row_count": 0,
+      "input_row_count": 2003,
+      "model_name": "openai",
+      "output_row_count": 2003
+    },
+    "sapbert": {
+      "duplicate_id_count": 0,
+      "duplicate_ids_sample": [],
+      "exact_duplicate_row_count": 0,
+      "input_row_count": 2003,
+      "model_name": "sapbert",
+      "output_row_count": 2003
+    }
+  },
+  "models": [
+    {
+      "embedding_dimension": 1536,
+      "model_name": "openai",
+      "relationship_count": 2003
+    },
+    {
+      "embedding_dimension": 768,
+      "model_name": "sapbert",
+      "relationship_count": 2003
+    }
+  ],
+  "projection_parameters": {
+    "method": "pca",
+    "random_seed": 13
+  },
+  "queries": [
+    "drug resistance in cancer",
+    "genes involved in chemoresistance in cancer",
+    "PTEN cancer chemoresistance",
+    "therapeutic response relationships"
+  ],
+  "random_seed": 13
+}

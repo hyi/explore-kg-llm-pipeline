@@ -1,0 +1,3 @@
+embedding_dimension,left_only_count,matched_count,model_name,relationship_count,right_only_count,same_population
+1536,0,2003,openai,2003,0,True
+768,0,2003,sapbert,2003,0,True

@@ -357,8 +357,6 @@ def _expansion_from_payload(
     )
     pagination = payload.get("pagination") if isinstance(payload.get("pagination"), dict) else {}
     total_available = pagination.get("total")
-    if total_available is None:
-        total_available = pagination.get("count")
     return ExternalExpansionResult(
         query_curie=query_curie,
         edges=edges,
@@ -369,6 +367,7 @@ def _expansion_from_payload(
         diagnostics={
             "requested_params": {key: value for key, value in requested_params.items() if value is not None},
             "pagination": pagination,
+            "page_count": int(pagination.get("count") or len(edges)),
             "direction_filter_applied_client_side": config.normalized_direction() != "either",
         },
     )

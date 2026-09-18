@@ -1,0 +1,2 @@
+query,query_compatible_predicate_matches,raw_result_count,requested_entity_type_matches,reranked_result_count,result_count,unique_endpoint_neighborhoods,unique_predicate_families,unique_predicates,unique_publications
+genes involved in chemoresistance in cancer,6,116,65,146,262,0,9,17,20

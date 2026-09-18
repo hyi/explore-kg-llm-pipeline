@@ -129,7 +129,9 @@ def test_http_provider_propagates_filters_and_retains_remote_provenance() -> Non
     assert edge.supporting_sentences == ("PTEN affects cancer drug response.",)
     assert edge.score and edge.score > 0
     assert "predicate family compatibility" in edge.ranking_reasons
+    assert result.total_available is None
     assert result.diagnostics["requested_params"]["limit"] == 2
+    assert result.diagnostics["page_count"] == 2
     assert result.diagnostics["direction_filter_applied_client_side"] is True
 
 

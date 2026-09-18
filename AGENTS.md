@@ -789,7 +789,7 @@ settings, and limitations of the visual comparison.
 
 ---
 
-## Active Workstream 3: LitCoin-to-ROBOKOP Cross-Graph Expansion
+## Implemented Active Workstream 3: LitCoin-to-ROBOKOP Cross-Graph Expansion
 Next-agent focus: implement this workstream next. Do not continue tuning
 Workstream 1 or 1B ranking, retrieval, or UI behavior or Workstream 2 Analysis 
 unless the user explicitly requests it. Reuse existing implementations when possible.
@@ -936,7 +936,7 @@ Do not make live network access part of the default pytest suite.
 
 ---
 
-## Group Presentation and Demo Readiness
+## Implemented Group Presentation and Demo Readiness
 
 The near-term milestone is a group presentation that uses evidence from the
 analysis notebook and a brief live demonstration of the explorer. The goal is
@@ -961,6 +961,7 @@ Before presentation handoff:
   queries
 * prepare a short table of implemented findings, observed limitations, and
   grant-worthy future directions
+* place all generated artifacts useful for group presentation and demo in the "presentation" subfolder.  
 
 Do not add slide-generation or presentation-authoring dependencies to the
 explorer unless explicitly requested. Produce reusable figures, tables, and
@@ -982,7 +983,6 @@ shows nearby edges, model-specific rankings, publication concentration, and
 ranking reasons for a selected anchor.
 
 Any such integration is a new product decision. Present its user value,
-interaction design, performance implications, and maintenance cost, and obtain
-approval before implementation.
+interaction design, performance implications, and obtain approval before implementation.
 
 ---

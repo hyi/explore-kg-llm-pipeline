@@ -377,7 +377,7 @@ def test_node_action_panel_renders_robokop_summary_and_edges() -> None:
     assert by_id["robokop-prev-page-button"].children == "Previous page"
     assert by_id["robokop-next-page-button"].children == "Next page"
     assert (
-        "Fetched 1 ROBOKOP edge(s) at offset 2 with limit 3 "
+        "ROBOKOP returned 1 edge(s); displaying 1 candidate card(s) at offset 2 with limit 3 "
         "(category biolink:Drug; predicate biolink:affects; direction outgoing)."
     ) in [
         getattr(component, "children", None) for component in _walk_components(panel)
@@ -459,9 +459,10 @@ def test_node_action_panel_shows_empty_robokop_page() -> None:
     text = [getattr(component, "children", None) for component in _walk_components(panel)]
 
     assert (
-        "Fetched 0 of 3 ROBOKOP edge(s) at offset 0 with limit 3 "
+        "ROBOKOP returned 3 of 3 edge(s); displaying 0 candidate card(s) at offset 0 with limit 3 "
         "(category biolink:Drug; predicate biolink:affects; direction incoming). "
-        "3 edge(s) were hidden by the direction filter. Try changing category, predicate, direction, or offset."
+        "3 edge(s) were hidden by the direction filter; set direction to Either to inspect them. "
+        "Try changing category, predicate, direction, or offset, then fetch again."
     ) in text
 
 

@@ -1,0 +1,6 @@
+area,check,notes,status
+Evidence notebook,Analysis artifacts copied into presentation/artifacts.,"Core HTML, CSV, and JSON artifacts are present.",ready
+Embedding coverage,OpenAI and SapBERT rows cover the same relationship IDs.,same_population=True,ready
+Primary query,Use the configured primary query for the live explorer demo.,genes involved in chemoresistance in cancer,ready
+ROBOKOP fixture,Run the app with ROBOKOP_MODE=fixture for deterministic development fallback.,Fixture mode is explicit in provider metadata and UI mode badges.,ready
+ROBOKOP live,Run explorer/tests/test_robokop_live_integration.py with RUN_LIVE_ROBOKOP=1 before the presentation.,Live availability is not part of the default pytest suite.,opt-in

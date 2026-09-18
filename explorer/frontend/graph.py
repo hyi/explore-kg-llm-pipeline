@@ -464,6 +464,7 @@ def _robokop_page_status(expansion: dict[str, Any]) -> Any:
     config = expansion.get("config") or {}
     diagnostics = expansion.get("diagnostics") or {}
     filtered_count = int(diagnostics.get("direction_filtered_count") or 0)
+    raw_page_count = len(edges) + filtered_count
     total_available = expansion.get("total_available")
     total_text = f" of {total_available}" if total_available is not None else ""
     filter_bits = [
@@ -472,14 +473,14 @@ def _robokop_page_status(expansion: dict[str, Any]) -> Any:
         f"direction {config.get('direction') or 'either'}",
     ]
     message = (
-        f"Fetched {len(edges)}{total_text} ROBOKOP edge(s) "
+        f"ROBOKOP returned {raw_page_count}{total_text} edge(s); displaying {len(edges)} candidate card(s) "
         f"at offset {config.get('offset', 0)} with limit {config.get('limit', 10)} "
         f"({'; '.join(filter_bits)})."
     )
     if filtered_count:
-        message += f" {filtered_count} edge(s) were hidden by the direction filter."
+        message += f" {filtered_count} edge(s) were hidden by the direction filter; set direction to Either to inspect them."
     if not edges:
-        message += " Try changing category, predicate, direction, or offset."
+        message += " Try changing category, predicate, direction, or offset, then fetch again."
     return html.Div(message, className="node-inline-message" if not edges else "node-labels")
 
 
