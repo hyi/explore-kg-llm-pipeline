@@ -13,6 +13,9 @@ build/
 scripts/data/
 src/search/results/
 sapbert_model/
+paper/
+.jupyter
+.virtual_documents
 develop-eggs/
 dist/
 downloads/

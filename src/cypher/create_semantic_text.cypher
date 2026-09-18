@@ -1,47 +1,65 @@
 MATCH (s)-[r]->(o)
 SET r.semantic_text =
   trim(
-    // --- Core claim ---
+    // --- Subject ---
     coalesce(r.llm_subject, s.name, '') +
 
     CASE
-      WHEN r.llm_subject_qualifier IS NOT NULL
-        AND r.llm_subject_qualifier <> 'NA'
-        AND r.llm_subject_qualifier <> "{'NA': 'NA'}"
-      THEN ' (subject qualifier: ' + toString(r.llm_subject_qualifier) + ')'
+      WHEN r.llm_subject_type IS NOT NULL
+        AND trim(toString(r.llm_subject_type)) <> ''
+        AND toUpper(trim(toString(r.llm_subject_type))) <> 'NA'
+      THEN ' (subject type: ' + trim(toString(r.llm_subject_type)) + ')'
       ELSE ''
     END +
 
+    CASE
+      WHEN r.llm_subject_qualifier IS NOT NULL
+        AND trim(toString(r.llm_subject_qualifier)) <> ''
+        AND toUpper(trim(toString(r.llm_subject_qualifier))) <> 'NA'
+        AND trim(toString(r.llm_subject_qualifier)) <> "{'NA': 'NA'}"
+        AND trim(toString(r.llm_subject_qualifier)) <> '{}'
+      THEN ' (subject qualifier: '
+        + trim(toString(r.llm_subject_qualifier))
+        + ')'
+      ELSE ''
+    END +
+
+    // --- Relationship ---
     ' ' + coalesce(r.llm_relationship, type(r), '') + ' ' +
 
+    // --- Object ---
     coalesce(r.llm_object, o.name, '') +
 
     CASE
-      WHEN r.llm_object_qualifier IS NOT NULL
-        AND r.llm_object_qualifier <> 'NA'
-        AND r.llm_object_qualifier <> "{'NA': 'NA'}"
-      THEN ' (object qualifier: ' + toString(r.llm_object_qualifier) + ')'
+      WHEN r.llm_object_type IS NOT NULL
+        AND trim(toString(r.llm_object_type)) <> ''
+        AND toUpper(trim(toString(r.llm_object_type))) <> 'NA'
+      THEN ' (object type: ' + trim(toString(r.llm_object_type)) + ')'
       ELSE ''
     END +
 
-    // --- Literature context ---
     CASE
-      WHEN r.abstract_title IS NOT NULL OR r.abstract_text IS NOT NULL
-      THEN
-        '\n\nEvidence:' +
+      WHEN r.llm_object_qualifier IS NOT NULL
+        AND trim(toString(r.llm_object_qualifier)) <> ''
+        AND toUpper(trim(toString(r.llm_object_qualifier))) <> 'NA'
+        AND trim(toString(r.llm_object_qualifier)) <> "{'NA': 'NA'}"
+        AND trim(toString(r.llm_object_qualifier)) <> '{}'
+      THEN ' (object qualifier: '
+        + trim(toString(r.llm_object_qualifier))
+        + ')'
+      ELSE ''
+    END +
 
-        CASE
-          WHEN r.abstract_title IS NOT NULL
-          THEN '\nTitle: ' + r.abstract_title
-          ELSE ''
-        END +
-
-        CASE
-          WHEN r.abstract_text IS NOT NULL
-          THEN '\nAbstract: ' + substring(r.abstract_text, 0, 800)
-          ELSE ''
-        END
+    // --- Claim-level qualification ---
+    CASE
+      WHEN r.llm_statement_qualifier IS NOT NULL
+        AND trim(toString(r.llm_statement_qualifier)) <> ''
+        AND toUpper(trim(toString(r.llm_statement_qualifier))) <> 'NA'
+        AND trim(toString(r.llm_statement_qualifier)) <> "{'NA': 'NA'}"
+        AND trim(toString(r.llm_statement_qualifier)) <> '{}'
+      THEN ' (statement qualifier: '
+        + trim(toString(r.llm_statement_qualifier))
+        + ')'
       ELSE ''
     END
   );
-

@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from explorer.backend.models import SemanticSearchResult
+from explorer.backend.semantic_search.ranking import (
+    AnchorRankingConfig,
+    candidate_pool_size,
+    publication_identity,
+    relationship_identity,
+    rerank_relationships_with_diagnostics,
+)
+from explorer.backend.semantic_search.retrieval import (
+    RetrievalConfig,
+    retrieve_relationship_candidates,
+)
 from src.embeddings.embed_relationships import relationship_similarity_search
 
 
@@ -11,6 +25,22 @@ class SemanticSearchService:
     expansion remains available for callers that explicitly request it.
     """
 
+    def __init__(
+        self,
+        config: AnchorRankingConfig | None = None,
+        relationship_retriever: Callable[..., list[Any]] = relationship_similarity_search,
+        keyword_retriever: Callable[..., list[Any]] | None = None,
+        metadata_enricher: Callable[[list[Any]], list[Any]] | None = None,
+        model: str | None = None,
+        retrieval_config: RetrievalConfig | None = None,
+    ) -> None:
+        self.config = config or AnchorRankingConfig()
+        self.relationship_retriever = relationship_retriever
+        self.keyword_retriever = keyword_retriever
+        self.metadata_enricher = metadata_enricher
+        self.model = model
+        self.retrieval_config = retrieval_config or RetrievalConfig()
+
     def search(
         self,
         query: str,
@@ -20,9 +50,43 @@ class SemanticSearchService:
         include_nodes: bool = False,
     ) -> SemanticSearchResult:
         if not include_nodes:
+            raw_k = candidate_pool_size(relationship_k, self.config)
+            retrieval_result = retrieve_relationship_candidates(
+                query,
+                k=raw_k,
+                dense_retriever=self.relationship_retriever,
+                keyword_retriever=self.keyword_retriever,
+                model=self.model,
+                config=self.retrieval_config,
+            )
+            candidates = retrieval_result.candidates
+            if self.metadata_enricher:
+                candidates = self.metadata_enricher(candidates)
+            ranking_result = rerank_relationships_with_diagnostics(
+                query=query,
+                candidates=candidates,
+                requested_k=relationship_k,
+                config=self.config,
+            )
+            raw_candidate_diagnostics = sorted(
+                ranking_result.diagnostics["ranked_candidates"],
+                key=lambda item: item["raw_rank"],
+            )
+            diagnostics = {
+                "requested_relationship_k": relationship_k,
+                "raw_candidate_k": raw_k,
+                "retrieval_model": self.model or "configured",
+                "retrieval": retrieval_result.diagnostics,
+                "query_intent": ranking_result.diagnostics["query_intent"],
+                "raw_candidates": raw_candidate_diagnostics,
+                "raw_semantic_candidates": raw_candidate_diagnostics,
+                "reranked_candidates": ranking_result.diagnostics["ranked_candidates"],
+                "selected_anchors": ranking_result.diagnostics["selected_anchors"],
+            }
             return SemanticSearchResult(
-                relationships=relationship_similarity_search(query, k=relationship_k),
+                relationships=ranking_result.relationships,
                 nodes={},
+                diagnostics=diagnostics,
             )
 
         from src.search.semantic_search import run_semantic_search
@@ -32,8 +96,33 @@ class SemanticSearchService:
             relationship_k=relationship_k,
             node_k_per_entity=node_k_per_entity,
             max_nodes_per_entity=max_nodes_per_entity,
+            model=self.model,
         )
         return SemanticSearchResult(
             relationships=evidence_graph.relationships,
             nodes=evidence_graph.nodes,
         )
+
+
+def _candidate_diagnostics(candidates: list[Any]) -> list[dict[str, Any]]:
+    diagnostics = []
+    for raw_rank, candidate in enumerate(candidates):
+        metadata = dict(getattr(candidate, "metadata", {}) or {})
+        diagnostics.append(
+            {
+                "raw_rank": raw_rank,
+                "relationship_identity": relationship_identity(metadata, fallback=f"raw-rank:{raw_rank}"),
+                "semantic_score": float(metadata.get("semantic_score", metadata.get("score", 0.0)) or 0.0),
+                "predicate": metadata.get("predicate"),
+                "subject": metadata.get("llm_subject") or metadata.get("original_subject") or metadata.get("subject"),
+                "object": metadata.get("llm_object") or metadata.get("original_object") or metadata.get("object"),
+                "publication_id": publication_identity(metadata),
+                "retrieval_model": metadata.get("retrieval_model"),
+                "retrieval_method": metadata.get("retrieval_method"),
+                "retrieval_index_name": metadata.get("retrieval_index_name"),
+                "retrieval_embedding_property": metadata.get("retrieval_embedding_property"),
+                "retrieval_expected_dimensions": metadata.get("retrieval_expected_dimensions"),
+                "retrieval_query_embedding_dimensions": metadata.get("retrieval_query_embedding_dimensions"),
+            }
+        )
+    return diagnostics

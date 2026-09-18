@@ -1,0 +1,94 @@
+{
+  "nodes": {
+    "NCBIGene:5728": {
+      "id": "NCBIGene:5728",
+      "name": "PTEN",
+      "category": ["biolink:Gene", "biolink:Protein"],
+      "properties": {
+        "symbol": "PTEN",
+        "description": "phosphatase and tensin homolog",
+        "equivalent_identifiers": ["HGNC:9588", "UniProtKB:P60484"]
+      }
+    }
+  },
+  "edge_summaries": {
+    "NCBIGene:5728": {
+      "query_curie": "NCBIGene:5728",
+      "edge_types": [
+        {
+          "predicate": "biolink:is_nearby_variant_of",
+          "category": "biolink:SequenceVariant",
+          "count": 636
+        },
+        {
+          "predicate": "biolink:increases_sensitivity_to",
+          "category": "biolink:Drug",
+          "count": 4
+        },
+        {
+          "predicate": "biolink:genetically_associated_with",
+          "category": "biolink:Disease",
+          "count": 311
+        }
+      ]
+    }
+  },
+  "edges": {
+    "NCBIGene:5728": [
+      {
+        "edge": {
+          "predicate": "biolink:is_nearby_variant_of",
+          "direction": "<",
+          "properties": {
+            "original_subject": "CAID:CA000103",
+            "original_object": "ENSEMBL:ENSG00000171862",
+            "primary_knowledge_source": "infores:robokop-snpeff",
+            "knowledge_level": "prediction",
+            "agent_type": "computational_model"
+          }
+        },
+        "adj_node": {
+          "id": "CAID:CA000103",
+          "name": "rs786201041",
+          "category": ["biolink:SequenceVariant"]
+        }
+      },
+      {
+        "edge": {
+          "predicate": "biolink:increases_sensitivity_to",
+          "direction": ">",
+          "properties": {
+            "original_subject": "NCBIGene:5728",
+            "original_object": "DRUGBANK:DB00515",
+            "primary_knowledge_source": "infores:robokop-ctd",
+            "publications": ["PMID:12345"],
+            "object_aspect_qualifier": "response",
+            "sentences": "PTEN status can affect sensitivity to cisplatin in cancer models."
+          }
+        },
+        "adj_node": {
+          "id": "DRUGBANK:DB00515",
+          "name": "cisplatin",
+          "category": ["biolink:Drug"]
+        }
+      },
+      {
+        "edge": {
+          "predicate": "biolink:genetically_associated_with",
+          "direction": ">",
+          "properties": {
+            "original_subject": "NCBIGene:5728",
+            "original_object": "MONDO:0004992",
+            "primary_knowledge_source": "infores:robokop-hmdb",
+            "publications": ["PMID:67890"]
+          }
+        },
+        "adj_node": {
+          "id": "MONDO:0004992",
+          "name": "cancer",
+          "category": ["biolink:Disease"]
+        }
+      }
+    ]
+  }
+}

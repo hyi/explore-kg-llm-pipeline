@@ -56,13 +56,25 @@ def dump_relationships(path=None, model="openai"):
     embedding_key = config["embedding_key"]
     embedding_property = cypher_escape_identifier(config["embedding_property"])
     query = f"""
-    MATCH ()-[r]-()
+    MATCH (start)-[r]->(end)
     WHERE r.`{embedding_property}` IS NOT NULL
     RETURN
       r.id AS rel_id,
       type(r) AS predicate,
-      r.original_subject AS subject,
-      r.original_object AS object,
+      coalesce(start.id, start.name, elementId(start)) AS subject,
+      coalesce(end.id, end.name, elementId(end)) AS object,
+      coalesce(start.name, start.id, elementId(start)) AS subject_name,
+      coalesce(end.name, end.id, elementId(end)) AS object_name,
+      labels(start) AS subject_labels,
+      labels(end) AS object_labels,
+      r.publications AS publications,
+      r.llm_abstract_id AS llm_abstract_id,
+      r.abstract_title AS abstract_title,
+      CASE
+        WHEN r.publications IS NOT NULL AND size(r.publications) > 0 THEN r.publications[0]
+        WHEN r.llm_abstract_id IS NOT NULL THEN toString(r.llm_abstract_id)
+        ELSE r.abstract_title
+      END AS publication_id,
       r.semantic_text AS semantic_text,
       r.`{embedding_property}` AS {embedding_key}
     """

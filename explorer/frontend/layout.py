@@ -45,7 +45,7 @@ def build_layout() -> html.Div:
                             dcc.Input(
                                 id="query-input",
                                 type="text",
-                                placeholder="Example: genes involved in drug resistance in cancer",
+                                placeholder="Example: genes involved in chemoresistance in cancer",
                                 debounce=True,
                                 className="query-input",
                             ),

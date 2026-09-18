@@ -299,6 +299,11 @@ th {
   background: var(--ochre);
 }
 
+.legend-remote {
+  border-top-style: dotted;
+  border-top-color: #547aa5;
+}
+
 .legend-line {
   display: inline-block;
   width: 22px;
@@ -323,6 +328,38 @@ th {
   align-items: center;
   justify-content: space-between;
   gap: 14px;
+  flex-wrap: wrap;
+}
+
+.expansion-controls {
+  display: grid;
+  flex: 1 1 420px;
+  gap: 8px;
+  min-width: 280px;
+}
+
+.expansion-control-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
+  gap: 8px;
+  align-items: end;
+}
+
+.expansion-control-row label {
+  align-self: center;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.expansion-input,
+.expansion-select .Select-control {
+  min-height: 36px;
+}
+
+.expansion-input,
+.expansion-number {
+  width: 100%;
 }
 
 .node-inline-message {
@@ -332,6 +369,69 @@ th {
   font-size: 12px;
   font-weight: 800;
   padding: 8px 10px;
+}
+
+.node-inline-message.error {
+  background: rgba(192, 90, 43, 0.13);
+  color: var(--rust);
+}
+
+.robokop-controls {
+  flex: 1 1 100%;
+  display: grid;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.robokop-meta-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.source-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 5px 9px;
+  background: rgba(84, 122, 165, 0.12);
+  color: #36577d;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.source-badge.fixture {
+  background: rgba(216, 160, 61, 0.16);
+  color: #86611f;
+}
+
+.source-badge.live {
+  background: rgba(47, 111, 99, 0.12);
+  color: var(--green);
+}
+
+.robokop-edge-list {
+  display: grid;
+  gap: 8px;
+}
+
+.robokop-edge-card {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px;
+  background: rgba(84, 122, 165, 0.08);
+}
+
+.robokop-edge-card.selected {
+  background: rgba(47, 111, 99, 0.10);
+}
+
+.robokop-edge-title {
+  font-size: 13px;
+  font-weight: 900;
 }
 
 .selected-node-copy {

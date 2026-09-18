@@ -2,10 +2,22 @@ from __future__ import annotations
 
 from typing import Any
 
+from langchain_core.documents import Document
 from neo4j import GraphDatabase
 
 from explorer.backend.models import Edge, Node, Path
+from explorer.backend.semantic_search.keyword import rank_keyword_records
+from explorer.backend.semantic_search.neighborhood import (
+    NeighborhoodExpansionConfig,
+    rank_neighborhood_candidates,
+)
+from explorer.backend.semantic_search.query_intent import build_bm25_content_query
+from explorer.backend.semantic_search.ranking import compact_anchor_metadata
 from src.config import NEO4J_PASSWORD, NEO4J_URI, NEO4J_USERNAME
+from src.embeddings.embedding_utils import (
+    cypher_escape_identifier,
+    get_embedding_property,
+)
 
 
 class Neo4jGraphAdapter:
@@ -26,6 +38,214 @@ class Neo4jGraphAdapter:
 
     def close(self) -> None:
         self._driver.close()
+
+    def enrich_relationship_hits(self, candidates: list[Any]) -> list[Any]:
+        candidate_keys = []
+        for position, candidate in enumerate(candidates):
+            metadata = dict(getattr(candidate, "metadata", {}) or {})
+            candidate_keys.append(
+                {
+                    "position": position,
+                    "rel_id": _first_present(metadata, "id", "rel_id", "relationship_id"),
+                    "subject": _first_present(metadata, "original_subject", "subject", "llm_subject"),
+                    "object": _first_present(metadata, "original_object", "object", "llm_object"),
+                    "predicate": metadata.get("predicate"),
+                }
+            )
+
+        if not candidate_keys:
+            return []
+
+        cypher = """
+        UNWIND $candidates AS candidate
+        MATCH (start)-[r]->(end)
+        WHERE (
+            candidate.rel_id IS NOT NULL
+            AND r.id = candidate.rel_id
+          )
+          OR (
+            candidate.subject IS NOT NULL
+            AND candidate.object IS NOT NULL
+            AND (
+              start.id = candidate.subject
+              OR toLower(coalesce(start.name, "")) = toLower(candidate.subject)
+            )
+            AND (
+              end.id = candidate.object
+              OR toLower(coalesce(end.name, "")) = toLower(candidate.object)
+            )
+            AND (candidate.predicate IS NULL OR type(r) = candidate.predicate)
+          )
+        WITH candidate, r, start, end, candidate.rel_id IS NOT NULL AND r.id = candidate.rel_id AS exact_rel_id
+        ORDER BY candidate.position, exact_rel_id DESC, elementId(r)
+        WITH candidate, collect({
+          relationship_id: coalesce(r.id, elementId(r)),
+          relationship_element_id: elementId(r),
+          predicate: type(r),
+          subject_id: coalesce(start.id, start.name, elementId(start)),
+          object_id: coalesce(end.id, end.name, elementId(end)),
+          subject_name: coalesce(start.name, start.id, elementId(start)),
+          object_name: coalesce(end.name, end.id, elementId(end)),
+          subject_labels: labels(start),
+          object_labels: labels(end),
+          publications: r.publications,
+          llm_abstract_id: r.llm_abstract_id,
+          abstract_title: r.abstract_title,
+          publication_id: CASE
+            WHEN r.publications IS NOT NULL AND size(r.publications) > 0 THEN r.publications[0]
+            WHEN r.llm_abstract_id IS NOT NULL THEN toString(r.llm_abstract_id)
+            ELSE r.abstract_title
+          END
+        }) AS matches
+        RETURN candidate.position AS position, head(matches) AS metadata
+        """
+
+        with self._driver.session() as session:
+            records = list(session.run(cypher, candidates=candidate_keys))
+
+        enrichment_by_position = {
+            int(record["position"]): dict(record["metadata"] or {})
+            for record in records
+            if record["metadata"]
+        }
+        enriched = []
+        for position, candidate in enumerate(candidates):
+            metadata = dict(getattr(candidate, "metadata", {}) or {})
+            metadata.update(enrichment_by_position.get(position, {}))
+            enriched.append(_candidate_with_metadata(candidate, metadata))
+        return enriched
+
+    def keyword_relationship_search(self, query: str, k: int = 25) -> list[Document]:
+        bm25_query = build_bm25_content_query(query)
+        tokens = list(bm25_query.tokens)
+        if not tokens or k <= 0:
+            return []
+
+        limit = _bounded_int(k, minimum=1, maximum=100)
+        cypher = """
+        MATCH (start)-[r]->(end)
+        WITH start, r, end, properties(r) AS rel_props
+        WITH start, r, end, rel_props,
+          toLower(
+            coalesce(rel_props.edge_text, "") + " " +
+            CASE
+              WHEN "biolink:Publication" IN labels(start) THEN ""
+              ELSE coalesce(rel_props.llm_subject, start.name, start.id, "")
+            END + " " +
+            coalesce(rel_props.llm_subject_qualifier, "") + " " +
+            type(r) + " " +
+            coalesce(rel_props.llm_relationship, "") + " " +
+            CASE
+              WHEN "biolink:Publication" IN labels(end) THEN ""
+              ELSE coalesce(rel_props.llm_object, end.name, end.id, "")
+            END + " " +
+            coalesce(rel_props.llm_object_qualifier, "") + " " +
+            coalesce(rel_props.llm_statement_qualifier, "")
+          ) AS edge_text
+        RETURN
+          coalesce(r.id, elementId(r)) AS relationship_id,
+          elementId(r) AS relationship_element_id,
+          type(r) AS predicate,
+          coalesce(start.id, start.name, elementId(start)) AS subject_id,
+          coalesce(end.id, end.name, elementId(end)) AS object_id,
+          coalesce(start.name, start.id, elementId(start)) AS subject_name,
+          coalesce(end.name, end.id, elementId(end)) AS object_name,
+          labels(start) AS subject_labels,
+          labels(end) AS object_labels,
+          rel_props.publications AS publications,
+          rel_props.llm_abstract_id AS llm_abstract_id,
+          rel_props.abstract_title AS abstract_title,
+          CASE
+            WHEN rel_props.publications IS NOT NULL AND size(rel_props.publications) > 0 THEN rel_props.publications[0]
+            WHEN rel_props.llm_abstract_id IS NOT NULL THEN toString(rel_props.llm_abstract_id)
+            ELSE rel_props.abstract_title
+          END AS publication_id,
+          coalesce(rel_props.llm_subject, start.name, start.id) AS llm_subject,
+          coalesce(rel_props.llm_object, end.name, end.id) AS llm_object,
+          rel_props.llm_relationship AS llm_relationship,
+          rel_props.semantic_text AS semantic_text,
+          edge_text
+        ORDER BY elementId(r)
+        """
+
+        with self._driver.session() as session:
+            raw_records = [dict(record) for record in session.run(cypher)]
+
+        records = rank_keyword_records(raw_records, tokens, limit=limit)
+
+        results: list[Document] = []
+        for record in records:
+            keyword_score = float(record["keyword_score"])
+            metadata = {
+                "id": record["relationship_id"],
+                "relationship_id": record["relationship_id"],
+                "element_id": record["relationship_element_id"],
+                "relationship_element_id": record["relationship_element_id"],
+                "predicate": record["predicate"],
+                "original_subject": record["subject_id"],
+                "original_object": record["object_id"],
+                "subject": record["subject_id"],
+                "object": record["object_id"],
+                "subject_name": record["subject_name"],
+                "object_name": record["object_name"],
+                "llm_subject": record["llm_subject"],
+                "llm_object": record["llm_object"],
+                "llm_relationship": record["llm_relationship"],
+                "subject_labels": list(record["subject_labels"] or []),
+                "object_labels": list(record["object_labels"] or []),
+                "publications": record["publications"],
+                "llm_abstract_id": record["llm_abstract_id"],
+                "abstract_title": record["abstract_title"],
+                "publication_id": record["publication_id"],
+                "semantic_text": record["semantic_text"],
+                "score": keyword_score,
+                "keyword_score": keyword_score,
+                "keyword_edge_matches": list(record["keyword_edge_matches"] or []),
+                "keyword_title_matches": list(record["keyword_title_matches"] or []),
+                "keyword_context_matches": list(record["keyword_context_matches"] or []),
+                "keyword_components": dict(record["keyword_components"] or {}),
+                "keyword_field_weights": dict(record["keyword_field_weights"] or {}),
+                "keyword_scoring_method": record["keyword_scoring_method"],
+                "keyword_query": bm25_query.to_dict(),
+                "retrieval_method": "edge_claim_bm25_scan",
+            }
+            content_parts = [
+                metadata.get("llm_subject"),
+                metadata.get("predicate"),
+                metadata.get("llm_object"),
+            ]
+            results.append(
+                Document(
+                    page_content=" ".join(str(part) for part in content_parts if part),
+                    metadata=metadata,
+                )
+            )
+        return results
+
+    def neighborhood_filter_options(self) -> dict[str, list[str]]:
+        """Return available node labels and relationship types for expansion filters."""
+        cypher = """
+        CALL () {
+          MATCH (n)
+          UNWIND labels(n) AS category
+          RETURN collect(DISTINCT category) AS node_categories
+        }
+        CALL () {
+          MATCH ()-[r]->()
+          RETURN collect(DISTINCT type(r)) AS predicates
+        }
+        RETURN node_categories, predicates
+        """
+        with self._driver.session() as session:
+            record = session.run(cypher).single()
+
+        if not record:
+            return {"node_categories": [], "predicates": []}
+
+        return {
+            "node_categories": _sorted_nonempty_strings(record["node_categories"]),
+            "predicates": _sorted_nonempty_strings(record["predicates"]),
+        }
 
     def candidate_paths_for_semantic_hit(
         self,
@@ -102,6 +322,7 @@ class Neo4jGraphAdapter:
                     seed_object=metadata.get("llm_object") or obj,
                     seed_predicate=metadata.get("predicate"),
                     evidence_text=evidence_text,
+                    anchor_metadata=compact_anchor_metadata(metadata),
                 )
                 if path:
                     paths.append(path)
@@ -110,9 +331,24 @@ class Neo4jGraphAdapter:
     def context_subgraph(
         self,
         focus_element_ids: list[str],
+        *,
+        query: str | None = None,
+        limit_per_focus: int | None = None,
+        node_categories: list[str] | tuple[str, ...] | None = None,
+        predicates: list[str] | tuple[str, ...] | None = None,
+        direction: str = "either",
     ) -> dict[str, list[dict[str, Any]]]:
         if not focus_element_ids:
             return {"nodes": [], "edges": []}
+        if query or limit_per_focus is not None or node_categories or predicates or direction != "either":
+            return self._ranked_context_subgraph(
+                focus_element_ids,
+                query=query or "",
+                limit_per_focus=limit_per_focus,
+                node_categories=node_categories,
+                predicates=predicates,
+                direction=direction,
+            )
 
         cypher = """
         MATCH (focus)
@@ -158,6 +394,7 @@ class Neo4jGraphAdapter:
             node = _node_from_projection(node_projection)
             nodes_by_id[node.element_id] = {
                 "id": node.element_id,
+                "curie": node.id,
                 "label": node.name,
                 "labels": node.labels,
                 "properties": node.properties,
@@ -178,6 +415,184 @@ class Neo4jGraphAdapter:
         return {
             "nodes": list(nodes_by_id.values()),
             "edges": list(edges_by_id.values()),
+        }
+
+    def _ranked_context_subgraph(
+        self,
+        focus_element_ids: list[str],
+        *,
+        query: str,
+        limit_per_focus: int | None,
+        node_categories: list[str] | tuple[str, ...] | None,
+        predicates: list[str] | tuple[str, ...] | None,
+        direction: str,
+    ) -> dict[str, list[dict[str, Any]]]:
+        limit = limit_per_focus if limit_per_focus is not None else 12
+        config = NeighborhoodExpansionConfig(
+            limit=limit,
+            node_categories=tuple(node_categories or ()),
+            predicates=tuple(predicates or ()),
+            direction=direction,
+        )
+        cypher = """
+        MATCH (focus)
+        WHERE elementId(focus) IN $focus_ids
+        WITH collect(DISTINCT focus) AS focus_nodes
+        UNWIND focus_nodes AS focus
+        CALL (focus) {
+          MATCH (focus)-[r]-(neighbor)
+          WITH focus, r, neighbor,
+            CASE WHEN elementId(startNode(r)) = elementId(focus) THEN "outgoing" ELSE "incoming" END AS direction
+          RETURN {
+            focus_id: elementId(focus),
+            edge_id: elementId(r),
+            neighbor_id: elementId(neighbor),
+            predicate: type(r),
+            direction: direction,
+            focus: focus {
+              .*,
+              element_id: elementId(focus),
+              labels: labels(focus),
+              id: coalesce(focus.id, focus.name, elementId(focus)),
+              display_name: coalesce(focus.name, focus.id, elementId(focus))
+            },
+            neighbor: neighbor {
+              .*,
+              element_id: elementId(neighbor),
+              labels: labels(neighbor),
+              id: coalesce(neighbor.id, neighbor.name, elementId(neighbor)),
+              display_name: coalesce(neighbor.name, neighbor.id, elementId(neighbor))
+            },
+            edge: r {
+              .*,
+              element_id: elementId(r),
+              type: type(r),
+              start_element_id: elementId(startNode(r)),
+              end_element_id: elementId(endNode(r)),
+              subject: coalesce(startNode(r).name, startNode(r).id, elementId(startNode(r))),
+              object: coalesce(endNode(r).name, endNode(r).id, elementId(endNode(r)))
+            }
+          } AS candidate
+        }
+        WITH focus_nodes, candidate
+        ORDER BY candidate.focus_id, candidate.edge_id, candidate.neighbor_id
+        RETURN
+          [n IN focus_nodes | n {
+            .*,
+            element_id: elementId(n),
+            labels: labels(n),
+            id: coalesce(n.id, n.name, elementId(n)),
+            display_name: coalesce(n.name, n.id, elementId(n))
+          }] AS focus_nodes,
+          collect(candidate) AS candidates
+        """
+
+        with self._driver.session() as session:
+            record = session.run(
+                cypher,
+                focus_ids=focus_element_ids,
+            ).single()
+
+        if not record:
+            return {"nodes": [], "edges": [], "diagnostics": {"ranked_neighborhoods": {}}}
+
+        nodes_by_id = {}
+        for node_projection in record["focus_nodes"]:
+            node = _node_from_projection(node_projection)
+            nodes_by_id[node.element_id] = {
+                "id": node.element_id,
+                "curie": node.id,
+                "label": node.name,
+                "labels": node.labels,
+                "properties": node.properties,
+                "is_focus": True,
+            }
+
+        candidate_groups: dict[str, list[dict[str, Any]]] = {focus_id: [] for focus_id in focus_element_ids}
+        for candidate in record["candidates"]:
+            focus = _node_from_projection(candidate["focus"])
+            neighbor = _node_from_projection(candidate["neighbor"])
+            edge = _edge_from_projection(candidate["edge"])
+            row = {
+                "predicate": candidate["predicate"],
+                "direction": candidate["direction"],
+                "focus": {
+                    "id": focus.element_id,
+                    "curie": focus.id,
+                    "label": focus.name,
+                    "labels": focus.labels,
+                },
+                "neighbor": {
+                    "id": neighbor.element_id,
+                    "curie": neighbor.id,
+                    "label": neighbor.name,
+                    "labels": neighbor.labels,
+                    "properties": neighbor.properties,
+                },
+                "edge": {
+                    "id": edge.element_id,
+                    "source": edge.start_element_id,
+                    "target": edge.end_element_id,
+                    "label": edge.type,
+                    "type": edge.type,
+                    "subject": edge.subject,
+                    "object": edge.object,
+                    "semantic_text": edge.properties.get("semantic_text"),
+                    "abstract_title": edge.properties.get("abstract_title"),
+                    "supporting_sentence": edge.properties.get("supporting_sentence"),
+                    "properties": edge.properties,
+                },
+            }
+            candidate_groups.setdefault(focus.element_id, []).append(row)
+
+        edges_by_id = {}
+        diagnostics_by_focus: dict[str, Any] = {}
+        for focus_id, candidates in candidate_groups.items():
+            ranking_result = rank_neighborhood_candidates(
+                candidates,
+                query=query,
+                config=config,
+            )
+            diagnostics_by_focus[focus_id] = ranking_result.diagnostics
+            for candidate in ranking_result.candidates:
+                neighbor = candidate["neighbor"]
+                edge = candidate["edge"]
+                nodes_by_id[neighbor["id"]] = {
+                    "id": neighbor["id"],
+                    "curie": neighbor.get("curie") or neighbor["properties"].get("id"),
+                    "label": neighbor["label"],
+                    "labels": neighbor["labels"],
+                    "properties": neighbor["properties"],
+                    "is_focus": False,
+                    "ranked_from_focus": focus_id,
+                    "neighborhood_score": candidate["neighborhood_score"],
+                }
+                edge_properties = dict(edge["properties"])
+                edge_properties.update(
+                    {
+                        "neighborhood_score": candidate["neighborhood_score"],
+                        "neighborhood_ranking_components": candidate["ranking_components"],
+                        "neighborhood_ranking_reasons": candidate["ranking_reasons"],
+                        "matched_query_tokens": candidate["matched_query_tokens"],
+                        "query_intent": candidate["query_intent"],
+                        "relationship_quality_tier": candidate["relationship_quality_tier"],
+                        "expansion_focus_id": focus_id,
+                    }
+                )
+                edges_by_id[edge["id"]] = {
+                    "id": edge["id"],
+                    "source": edge["source"],
+                    "target": edge["target"],
+                    "label": edge["label"],
+                    "properties": edge_properties,
+                    "neighborhood_score": candidate["neighborhood_score"],
+                    "ranking_reasons": candidate["ranking_reasons"],
+                }
+
+        return {
+            "nodes": list(nodes_by_id.values()),
+            "edges": list(edges_by_id.values()),
+            "diagnostics": {"ranked_neighborhoods": diagnostics_by_focus},
         }
 
     def has_unseen_neighbors(self, node_element_id: str, visible_node_ids: set[str]) -> bool:
@@ -220,29 +635,30 @@ class Neo4jGraphAdapter:
         limit: int = 8,
     ) -> dict[str, list[dict[str, Any]]]:
         limit = _bounded_int(limit, minimum=1, maximum=25)
-        cypher = """
+        embedding_property = cypher_escape_identifier(get_embedding_property())
+        cypher = f"""
         MATCH (anchor)
         WHERE elementId(anchor) = $anchor_id
-          AND anchor.embedding IS NOT NULL
+          AND anchor.`{embedding_property}` IS NOT NULL
         MATCH (similar)
         WHERE similar <> anchor
-          AND similar.embedding IS NOT NULL
+          AND similar.`{embedding_property}` IS NOT NULL
         RETURN
-          anchor {
+          anchor {{
             .*,
             element_id: elementId(anchor),
             labels: labels(anchor),
             id: coalesce(anchor.id, anchor.name, elementId(anchor)),
             display_name: coalesce(anchor.name, anchor.id, elementId(anchor))
-          } AS anchor,
-          similar {
+          }} AS anchor,
+          similar {{
             .*,
             element_id: elementId(similar),
             labels: labels(similar),
             id: coalesce(similar.id, similar.name, elementId(similar)),
             display_name: coalesce(similar.name, similar.id, elementId(similar))
-          } AS similar,
-          vector.similarity.cosine(anchor.embedding, similar.embedding) AS score
+          }} AS similar,
+          vector.similarity.cosine(anchor.`{embedding_property}`, similar.`{embedding_property}`) AS score
         ORDER BY score DESC
         LIMIT $limit
         """
@@ -257,6 +673,7 @@ class Neo4jGraphAdapter:
             similar = _node_from_projection(record["similar"])
             nodes_by_id[anchor.element_id] = {
                 "id": anchor.element_id,
+                "curie": anchor.id,
                 "label": anchor.name,
                 "labels": anchor.labels,
                 "properties": anchor.properties,
@@ -264,6 +681,7 @@ class Neo4jGraphAdapter:
             }
             nodes_by_id[similar.element_id] = {
                 "id": similar.element_id,
+                "curie": similar.id,
                 "label": similar.name,
                 "labels": similar.labels,
                 "properties": similar.properties,
@@ -296,6 +714,7 @@ class Neo4jGraphAdapter:
         seed_object: str | None,
         seed_predicate: str | None,
         evidence_text: str | None,
+        anchor_metadata: dict[str, Any] | None = None,
     ) -> Path | None:
         nodes = [_node_from_projection(node) for node in record["nodes"]]
         edges = [_edge_from_projection(edge) for edge in record["relationships"]]
@@ -310,6 +729,7 @@ class Neo4jGraphAdapter:
             seed_object=seed_object,
             seed_predicate=seed_predicate,
             evidence_text=evidence_text,
+            anchor_metadata=anchor_metadata or {},
         )
 
 def _node_from_projection(projection: dict[str, Any]) -> Node:
@@ -319,6 +739,7 @@ def _node_from_projection(projection: dict[str, Any]) -> Node:
     node_id = str(properties.pop("id", element_id))
     name = str(properties.pop("display_name", node_id))
     properties.pop("embedding", None)
+    properties.pop("sapbert_embedding", None)
     return Node(element_id=element_id, id=node_id, name=name, labels=labels, properties=properties)
 
 
@@ -331,6 +752,7 @@ def _edge_from_projection(projection: dict[str, Any]) -> Edge:
     subject = str(properties.pop("subject", ""))
     obj = str(properties.pop("object", ""))
     properties.pop("embedding", None)
+    properties.pop("sapbert_embedding", None)
     return Edge(
         element_id=element_id,
         type=edge_type,
@@ -340,6 +762,17 @@ def _edge_from_projection(projection: dict[str, Any]) -> Edge:
         object=obj,
         properties=properties,
     )
+
+
+def _candidate_with_metadata(candidate: Any, metadata: dict[str, Any]) -> Any:
+    if hasattr(candidate, "model_copy"):
+        return candidate.model_copy(update={"metadata": metadata})
+
+    import copy
+
+    cloned = copy.copy(candidate)
+    cloned.metadata = metadata
+    return cloned
 
 
 def _first_present(metadata: dict[str, Any], *keys: str) -> str | None:
@@ -352,3 +785,7 @@ def _first_present(metadata: dict[str, Any], *keys: str) -> str | None:
 
 def _bounded_int(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, int(value)))
+
+
+def _sorted_nonempty_strings(values: Any) -> list[str]:
+    return sorted({str(value) for value in values or [] if str(value).strip()})
