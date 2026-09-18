@@ -17,6 +17,13 @@ from dash import (
 )
 from dash.exceptions import PreventUpdate
 
+from explorer.backend.external_graph import (
+    BridgeResolutionConfig,
+    ExternalExpansionConfig,
+    RobokopProviderError,
+    resolve_litcoin_bridge,
+    robokop_provider_from_env,
+)
 from explorer.backend.graph_adapter.neo4j import Neo4jGraphAdapter
 from explorer.backend.path_search import PathSearchService
 from explorer.frontend.components import (
@@ -178,6 +185,8 @@ def register_callbacks(app: Dash) -> None:
             "focus_ids": focus_ids,
             "base_subgraph": subgraph,
             "semantic_subgraphs": {},
+            "robokop_subgraphs": {},
+            "robokop_state": {},
             "hidden_ids": [],
             "positions": initial_positions(subgraph["nodes"], subgraph["edges"]),
             "selected_node_id": None,
@@ -233,10 +242,31 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("context-store", "data", allow_duplicate=True),
+        Input({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
+        State("selected-path-id-store", "data"),
+        State("context-store", "data"),
+        prevent_initial_call=True,
+    )
+    def remember_selected_graph_node(
+        selected_node_data_values: list[list[dict[str, Any]] | None] | None,
+        selected_path_id: str | None,
+        context_store: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        node_id = _active_selected_node_id(selected_node_data_values)
+        if not node_id or not selected_path_id or selected_path_id not in (context_store or {}):
+            raise PreventUpdate
+
+        context_store = deepcopy(context_store)
+        context_store[selected_path_id]["selected_node_id"] = node_id
+        return context_store
+
+    @app.callback(
+        Output("context-store", "data", allow_duplicate=True),
         Output("status-message", "children", allow_duplicate=True),
         Input("expand-connected-button", "n_clicks"),
         Input("expand-similar-button", "n_clicks"),
         Input("collapse-node-button", "n_clicks"),
+        Input({"type": "add-robokop-edge", "edge_id": ALL}, "n_clicks"),
         State("selected-path-id-store", "data"),
         State("candidate-paths-store", "data"),
         State("context-store", "data"),
@@ -254,6 +284,7 @@ def register_callbacks(app: Dash) -> None:
         _expand_connected: int | None,
         _expand_similar: int | None,
         _collapse_node: int | None,
+        _robokop_add_clicks: list[int | None] | None,
         selected_path_id: str | None,
         paths: list[dict[str, Any]] | None,
         context_store: dict[str, Any] | None,
@@ -282,6 +313,16 @@ def register_callbacks(app: Dash) -> None:
         context["selected_node_id"] = node_id
         context["positions"] = positions_from_elements(_active_elements(elements_values), context.get("positions", {}))
         path_node_ids = {node["element_id"] for node in path["nodes"]}
+        if isinstance(action, dict) and action.get("type") == "add-robokop-edge":
+            edge_id = str(action.get("edge_id") or "")
+            edge = _robokop_edge_from_context(context, node_id, edge_id)
+            if not edge:
+                return no_update, status("Selected ROBOKOP edge is no longer available.", "warning")
+            _add_robokop_edge_to_context(context, node_id, edge)
+            seed_new_positions(context, node_id)
+            context_store = deepcopy(context_store or {})
+            context_store[selected_path_id] = context
+            return context_store, status("Added selected ROBOKOP edge to the visible graph.", "success")
 
         try:
             graph = Neo4jGraphAdapter()
@@ -340,6 +381,8 @@ def register_callbacks(app: Dash) -> None:
                     message = "Expanded semantically similar nodes."
                 elif action == "collapse-node-button":
                     context["semantic_subgraphs"].pop(node_id, None)
+                    context.get("robokop_subgraphs", {}).pop(node_id, None)
+                    context.get("robokop_state", {}).pop(node_id, None)
                     if node_id not in path_node_ids:
                         context["focus_ids"] = [focus_id for focus_id in context["focus_ids"] if focus_id != node_id]
                         active_query = (context.get("active_query") or path.get("source_query") or current_query or "").strip()
@@ -362,12 +405,208 @@ def register_callbacks(app: Dash) -> None:
                     raise PreventUpdate
             finally:
                 graph.close()
+        except RobokopProviderError as exc:
+            state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
+            state["error"] = str(exc)
+            state.setdefault("provider_mode", "error")
+            context_store = deepcopy(context_store or {})
+            context_store[selected_path_id] = context
+            return context_store, status(f"ROBOKOP expansion failed: {exc}", "error")
         except Exception as exc:  # noqa: BLE001 - graph adapter errors should become UI status.
             return no_update, status(f"Graph update failed: {exc}", "error")
 
         context_store = deepcopy(context_store or {})
         context_store[selected_path_id] = context
         return context_store, status(message, "success")
+
+    @app.callback(
+        Output("context-store", "data", allow_duplicate=True),
+        Output("status-message", "children", allow_duplicate=True),
+        Input("robokop-summary-button", "n_clicks"),
+        State("selected-path-id-store", "data"),
+        State("candidate-paths-store", "data"),
+        State("context-store", "data"),
+        State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
+        prevent_initial_call=True,
+    )
+    def fetch_robokop_summary(
+        n_clicks: int | None,
+        selected_path_id: str | None,
+        paths: list[dict[str, Any]] | None,
+        context_store: dict[str, Any] | None,
+        selected_node_data_values: list[list[dict[str, Any]] | None] | None,
+    ) -> tuple[dict[str, Any], Any]:
+        if not n_clicks or not selected_path_id:
+            raise PreventUpdate
+
+        path = find_path(paths or [], selected_path_id)
+        context = deepcopy((context_store or {}).get(selected_path_id))
+        node_id = _active_selected_node_id(selected_node_data_values) or (context or {}).get("selected_node_id")
+        if not path or not context or not node_id:
+            return no_update, status("Select a node before fetching a ROBOKOP summary.", "warning")
+
+        context["selected_node_id"] = node_id
+        bridge_node = _node_from_context(path, context, node_id)
+        bridge = resolve_litcoin_bridge(bridge_node, BridgeResolutionConfig())
+        context.setdefault("robokop_state", {})[node_id] = {
+            "bridge": bridge.to_dict(),
+            "provider_mode": "not queried",
+        }
+        if not bridge.is_resolved:
+            context_store = deepcopy(context_store or {})
+            context_store[selected_path_id] = context
+            return context_store, status(bridge.reason, "warning")
+
+        try:
+            provider = robokop_provider_from_env()
+            try:
+                remote_node = provider.lookup_node(bridge.curie)
+                summary = provider.edge_summary(bridge.curie)
+            finally:
+                close = getattr(provider, "close", None)
+                if callable(close):
+                    close()
+        except RobokopProviderError as exc:
+            state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
+            state["error"] = str(exc)
+            state.setdefault("provider_mode", "error")
+            context_store = deepcopy(context_store or {})
+            context_store[selected_path_id] = context
+            return context_store, status(f"ROBOKOP summary failed: {exc}", "error")
+
+        context["robokop_state"][node_id] = {
+            "bridge": bridge.to_dict(),
+            "provider_mode": summary.provider_mode,
+            "provider_base_url": getattr(provider, "base_url", None),
+            "node": remote_node.to_dict() if remote_node else None,
+            "summary": summary.to_dict(),
+            "selected_edge_ids": [],
+        }
+        context_store = deepcopy(context_store or {})
+        context_store[selected_path_id] = context
+        return (
+            context_store,
+            status(
+                f"Fetched ROBOKOP {summary.provider_mode} summary for {bridge.curie}: "
+                f"{summary.total_edges} incident edges reported.",
+                "success",
+            ),
+        )
+
+    @app.callback(
+        Output("context-store", "data", allow_duplicate=True),
+        Output("status-message", "children", allow_duplicate=True),
+        Input("robokop-expand-button", "n_clicks"),
+        Input("robokop-prev-page-button", "n_clicks"),
+        Input("robokop-next-page-button", "n_clicks"),
+        State("selected-path-id-store", "data"),
+        State("candidate-paths-store", "data"),
+        State("context-store", "data"),
+        State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
+        State("query-input", "value"),
+        State("expansion-query-input", "value"),
+        State("robokop-category-filter-dropdown", "value"),
+        State("robokop-predicate-filter-dropdown", "value"),
+        State("robokop-direction-dropdown", "value"),
+        State("robokop-limit-input", "value"),
+        State("robokop-offset-input", "value"),
+        prevent_initial_call=True,
+    )
+    def fetch_robokop_page(
+        n_clicks: int | None,
+        prev_clicks: int | None,
+        next_clicks: int | None,
+        selected_path_id: str | None,
+        paths: list[dict[str, Any]] | None,
+        context_store: dict[str, Any] | None,
+        selected_node_data_values: list[list[dict[str, Any]] | None] | None,
+        current_query: str | None,
+        expansion_query: str | None,
+        robokop_category: str | None,
+        robokop_predicate: str | None,
+        robokop_direction: str | None,
+        robokop_limit: float | str | None,
+        robokop_offset: float | str | None,
+    ) -> tuple[dict[str, Any], Any]:
+        action = ctx.triggered_id
+        clicked = ctx.triggered[0]["value"] if ctx.triggered else None
+        if not clicked or not selected_path_id:
+            raise PreventUpdate
+
+        path = find_path(paths or [], selected_path_id)
+        context = deepcopy((context_store or {}).get(selected_path_id))
+        node_id = _active_selected_node_id(selected_node_data_values) or (context or {}).get("selected_node_id")
+        if not path or not context or not node_id:
+            return no_update, status("Select a node before fetching a ROBOKOP page.", "warning")
+
+        context["selected_node_id"] = node_id
+        bridge_node = _node_from_context(path, context, node_id)
+        bridge = resolve_litcoin_bridge(bridge_node, BridgeResolutionConfig())
+        if not bridge.is_resolved:
+            context.setdefault("robokop_state", {})[node_id] = {
+                "bridge": bridge.to_dict(),
+                "provider_mode": "not queried",
+            }
+            context_store = deepcopy(context_store or {})
+            context_store[selected_path_id] = context
+            return context_store, status(bridge.reason, "warning")
+
+        active_query = (
+            expansion_query
+            or context.get("active_query")
+            or path.get("source_query")
+            or current_query
+            or ""
+        ).strip()
+        try:
+            provider = robokop_provider_from_env()
+            try:
+                limit = _bounded_robokop_limit(robokop_limit)
+                offset = _robokop_page_offset(
+                    robokop_offset,
+                    limit=limit,
+                    action=str(action),
+                )
+                expansion = provider.incident_edges(
+                    bridge.curie,
+                    ExternalExpansionConfig(
+                        category=robokop_category or None,
+                        predicate=robokop_predicate or None,
+                        direction=robokop_direction or "either",
+                        limit=limit,
+                        offset=offset,
+                        query=active_query,
+                    ),
+                )
+            finally:
+                close = getattr(provider, "close", None)
+                if callable(close):
+                    close()
+        except RobokopProviderError as exc:
+            state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
+            state["error"] = str(exc)
+            state.setdefault("provider_mode", "error")
+            context_store = deepcopy(context_store or {})
+            context_store[selected_path_id] = context
+            return context_store, status(f"ROBOKOP page fetch failed: {exc}", "error")
+
+        state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
+        state["bridge"] = bridge.to_dict()
+        state["provider_mode"] = expansion.provider_mode
+        state["provider_base_url"] = getattr(provider, "base_url", None)
+        state["expansion"] = expansion.to_dict()
+        state.setdefault("selected_edge_ids", [])
+        state.pop("error", None)
+        context_store = deepcopy(context_store or {})
+        context_store[selected_path_id] = context
+        return (
+            context_store,
+            status(
+                f"Fetched {expansion.total_returned} bounded ROBOKOP {expansion.provider_mode} "
+                f"edge(s) for {bridge.curie}.",
+                "success",
+            ),
+        )
 
     @app.callback(
         Output("context-store", "data", allow_duplicate=True),
@@ -523,6 +762,35 @@ def _bounded_expansion_limit(value: float | str | None) -> int:
     return max(1, min(parsed, 50))
 
 
+def _bounded_robokop_limit(value: float | str | None) -> int:
+    if value in (None, ""):
+        return 10
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 10
+    return max(1, min(parsed, 25))
+
+
+def _bounded_nonnegative_int(value: float | str | None) -> int:
+    if value in (None, ""):
+        return 0
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
+def _robokop_page_offset(value: float | str | None, *, limit: int, action: str) -> int:
+    current = _bounded_nonnegative_int(value)
+    if action == "robokop-next-page-button":
+        return current + max(1, int(limit))
+    if action == "robokop-prev-page-button":
+        return max(0, current - max(1, int(limit)))
+    return current
+
+
 def _active_elements(
     elements_values: list[list[dict[str, Any]] | None] | None,
 ) -> list[dict[str, Any]] | None:
@@ -530,3 +798,82 @@ def _active_elements(
         if elements:
             return elements
     return None
+
+
+def _node_from_context(path: dict[str, Any], context: dict[str, Any], node_id: str) -> dict[str, Any] | None:
+    for node in path.get("nodes", []):
+        if node.get("element_id") == node_id:
+            return {
+                "id": node.get("id"),
+                "curie": node.get("id"),
+                "label": node.get("name"),
+                "labels": node.get("labels", []),
+                "properties": node.get("properties", {}),
+            }
+    subgraphs = [
+        context.get("base_subgraph") or {},
+        *(context.get("semantic_subgraphs") or {}).values(),
+        *(context.get("robokop_subgraphs") or {}).values(),
+    ]
+    for subgraph in subgraphs:
+        for node in subgraph.get("nodes", []):
+            if node.get("id") == node_id:
+                return node
+    return None
+
+
+def _robokop_edge_from_context(context: dict[str, Any], node_id: str, edge_id: str) -> dict[str, Any] | None:
+    expansion = ((context.get("robokop_state") or {}).get(node_id) or {}).get("expansion") or {}
+    return next((edge for edge in expansion.get("edges", []) if edge.get("edge_id") == edge_id), None)
+
+
+def _add_robokop_edge_to_context(context: dict[str, Any], node_id: str, edge: dict[str, Any]) -> None:
+    subgraphs = context.setdefault("robokop_subgraphs", {})
+    subgraph = subgraphs.setdefault(node_id, {"nodes": [], "edges": []})
+    state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
+    selected_edge_ids = state.setdefault("selected_edge_ids", [])
+    if edge["edge_id"] not in selected_edge_ids:
+        selected_edge_ids.append(edge["edge_id"])
+
+    remote_node_id = f"robokop:{edge['adjacent_curie']}"
+    if edge.get("direction") == "incoming":
+        source, target = remote_node_id, node_id
+        remote_name = edge.get("subject_name") or edge["adjacent_curie"]
+        remote_categories = edge.get("subject_categories") or []
+    else:
+        source, target = node_id, remote_node_id
+        remote_name = edge.get("object_name") or edge["adjacent_curie"]
+        remote_categories = edge.get("object_categories") or []
+
+    nodes_by_id = {item["id"]: item for item in subgraph.get("nodes", [])}
+    nodes_by_id[remote_node_id] = {
+        "id": remote_node_id,
+        "curie": edge["adjacent_curie"],
+        "label": remote_name,
+        "labels": remote_categories,
+        "source_graph": "robokop",
+        "properties": {
+            "curie": edge["adjacent_curie"],
+            "source_graph": "robokop",
+        },
+    }
+    edges_by_id = {item["id"]: item for item in subgraph.get("edges", [])}
+    edges_by_id[edge["edge_id"]] = {
+        "id": edge["edge_id"],
+        "source": source,
+        "target": target,
+        "label": edge.get("predicate") or "",
+        "source_graph": "robokop",
+        "properties": {
+            "source_graph": "robokop",
+            "predicate": edge.get("predicate"),
+            "primary_knowledge_source": edge.get("primary_knowledge_source"),
+            "publications": edge.get("publications") or [],
+            "qualifiers": edge.get("qualifiers") or {},
+            "supporting_sentences": edge.get("supporting_sentences") or [],
+            "original_subject_curie": edge.get("original_subject_curie"),
+            "original_object_curie": edge.get("original_object_curie"),
+        },
+    }
+    subgraph["nodes"] = list(nodes_by_id.values())
+    subgraph["edges"] = list(edges_by_id.values())

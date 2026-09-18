@@ -157,6 +157,7 @@ def render_path_details(
                                 html.Span([html.Span(className="legend-dot legend-focus"), "Expanded focus"]),
                                 html.Span([html.Span(className="legend-dot legend-context"), "Context node"]),
                                 html.Span([html.Span(className="legend-line legend-semantic"), "Semantic similarity"]),
+                                html.Span([html.Span(className="legend-line legend-remote"), "ROBOKOP edge"]),
                             ],
                             className="graph-legend",
                         ),

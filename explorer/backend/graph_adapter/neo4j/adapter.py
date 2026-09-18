@@ -225,12 +225,12 @@ class Neo4jGraphAdapter:
     def neighborhood_filter_options(self) -> dict[str, list[str]]:
         """Return available node labels and relationship types for expansion filters."""
         cypher = """
-        CALL {
+        CALL () {
           MATCH (n)
           UNWIND labels(n) AS category
           RETURN collect(DISTINCT category) AS node_categories
         }
-        CALL {
+        CALL () {
           MATCH ()-[r]->()
           RETURN collect(DISTINCT type(r)) AS predicates
         }
@@ -394,6 +394,7 @@ class Neo4jGraphAdapter:
             node = _node_from_projection(node_projection)
             nodes_by_id[node.element_id] = {
                 "id": node.element_id,
+                "curie": node.id,
                 "label": node.name,
                 "labels": node.labels,
                 "properties": node.properties,
@@ -500,6 +501,7 @@ class Neo4jGraphAdapter:
             node = _node_from_projection(node_projection)
             nodes_by_id[node.element_id] = {
                 "id": node.element_id,
+                "curie": node.id,
                 "label": node.name,
                 "labels": node.labels,
                 "properties": node.properties,
@@ -516,11 +518,13 @@ class Neo4jGraphAdapter:
                 "direction": candidate["direction"],
                 "focus": {
                     "id": focus.element_id,
+                    "curie": focus.id,
                     "label": focus.name,
                     "labels": focus.labels,
                 },
                 "neighbor": {
                     "id": neighbor.element_id,
+                    "curie": neighbor.id,
                     "label": neighbor.name,
                     "labels": neighbor.labels,
                     "properties": neighbor.properties,
@@ -555,6 +559,7 @@ class Neo4jGraphAdapter:
                 edge = candidate["edge"]
                 nodes_by_id[neighbor["id"]] = {
                     "id": neighbor["id"],
+                    "curie": neighbor.get("curie") or neighbor["properties"].get("id"),
                     "label": neighbor["label"],
                     "labels": neighbor["labels"],
                     "properties": neighbor["properties"],
@@ -668,6 +673,7 @@ class Neo4jGraphAdapter:
             similar = _node_from_projection(record["similar"])
             nodes_by_id[anchor.element_id] = {
                 "id": anchor.element_id,
+                "curie": anchor.id,
                 "label": anchor.name,
                 "labels": anchor.labels,
                 "properties": anchor.properties,
@@ -675,6 +681,7 @@ class Neo4jGraphAdapter:
             }
             nodes_by_id[similar.element_id] = {
                 "id": similar.element_id,
+                "curie": similar.id,
                 "label": similar.name,
                 "labels": similar.labels,
                 "properties": similar.properties,

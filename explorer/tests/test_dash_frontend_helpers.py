@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from explorer.backend.models import Edge, Node, Path
 from explorer.frontend.callbacks import (
+    _add_robokop_edge_to_context,
     _bounded_expansion_limit,
+    _bounded_nonnegative_int,
+    _bounded_robokop_limit,
     _normalize_filter_values,
     _parse_comma_separated,
+    _robokop_page_offset,
 )
 from explorer.frontend.components import render_path_details
+from explorer.frontend.dash_app import create_app
 from explorer.frontend.graph import (
     cytoscape_elements,
     node_action_panel,
@@ -290,6 +295,7 @@ def test_node_action_panel_includes_ranked_expansion_controls() -> None:
         {"label": "biolink:affects_response_to", "value": "biolink:affects_response_to"},
         {"label": "biolink:associated_with", "value": "biolink:associated_with"},
     ]
+    assert by_id["robokop-summary-button"].children == "Fetch ROBOKOP summary"
 
 
 def test_expansion_filter_helpers_parse_and_bound_values() -> None:
@@ -302,6 +308,214 @@ def test_expansion_filter_helpers_parse_and_bound_values() -> None:
     assert _bounded_expansion_limit(None) == 12
     assert _bounded_expansion_limit("200") == 50
     assert _bounded_expansion_limit("bad") == 12
+    assert _bounded_robokop_limit(None) == 10
+    assert _bounded_robokop_limit("200") == 25
+    assert _bounded_nonnegative_int("-10") == 0
+    assert _robokop_page_offset("10", limit=5, action="robokop-next-page-button") == 15
+    assert _robokop_page_offset("10", limit=5, action="robokop-prev-page-button") == 5
+    assert _robokop_page_offset("2", limit=5, action="robokop-prev-page-button") == 0
+    assert _robokop_page_offset("10", limit=5, action="robokop-expand-button") == 10
+
+
+def test_node_action_panel_renders_robokop_summary_and_edges() -> None:
+    path = {"nodes": [{"element_id": "n1"}], "edges": []}
+    context = {
+        "base_subgraph": {
+            "nodes": [{"id": "n1", "curie": "NCBIGene:5728", "label": "PTEN"}],
+            "edges": [],
+        },
+        "semantic_subgraphs": {},
+        "robokop_subgraphs": {},
+        "hidden_ids": [],
+        "robokop_state": {
+            "n1": {
+                "provider_mode": "fixture",
+                "bridge": {"status": "resolved", "curie": "NCBIGene:5728"},
+                "summary": {
+                    "total_edges": 4,
+                    "items": [{"predicate": "biolink:affects", "category": "biolink:Drug", "count": 4}],
+                    "categories": ["biolink:Drug"],
+                    "predicates": ["biolink:affects"],
+                },
+                "expansion": {
+                    "config": {
+                        "category": "biolink:Drug",
+                        "predicate": "biolink:affects",
+                        "direction": "outgoing",
+                        "limit": 3,
+                        "offset": 2,
+                    },
+                    "edges": [
+                        {
+                            "edge_id": "robokop:e1",
+                            "subject_curie": "NCBIGene:5728",
+                            "object_curie": "DRUGBANK:DB00515",
+                            "predicate": "biolink:affects",
+                            "primary_knowledge_source": "infores:test",
+                            "score": 0.42,
+                            "ranking_reasons": ["keyword match"],
+                        }
+                    ],
+                },
+                "selected_edge_ids": [],
+            },
+        },
+    }
+
+    panel = node_action_panel(path, context, selected_node_id="n1")
+    by_id = {str(component.id): component for component in _walk_components(panel) if getattr(component, "id", None)}
+
+    assert by_id["robokop-category-filter-dropdown"].options == [
+        {"label": "biolink:Drug", "value": "biolink:Drug"}
+    ]
+    assert by_id["robokop-predicate-filter-dropdown"].options == [
+        {"label": "biolink:affects", "value": "biolink:affects"}
+    ]
+    assert by_id["robokop-direction-dropdown"].value == "outgoing"
+    assert by_id["robokop-limit-input"].value == 3
+    assert by_id["robokop-offset-input"].value == 2
+    assert by_id["robokop-prev-page-button"].children == "Previous page"
+    assert by_id["robokop-next-page-button"].children == "Next page"
+    assert (
+        "Fetched 1 ROBOKOP edge(s) at offset 2 with limit 3 "
+        "(category biolink:Drug; predicate biolink:affects; direction outgoing)."
+    ) in [
+        getattr(component, "children", None) for component in _walk_components(panel)
+    ]
+    assert any(
+        getattr(component, "children", None) == "Add remote edge"
+        for component in _walk_components(panel)
+    )
+
+
+def test_node_action_panel_shows_empty_robokop_summary() -> None:
+    path = {"nodes": [{"element_id": "n1"}], "edges": []}
+    context = {
+        "base_subgraph": {
+            "nodes": [{"id": "n1", "curie": "UMLS:C0596290", "label": "Cell Proliferation"}],
+            "edges": [],
+        },
+        "semantic_subgraphs": {},
+        "robokop_subgraphs": {},
+        "hidden_ids": [],
+        "robokop_state": {
+            "n1": {
+                "provider_mode": "live",
+                "bridge": {"status": "resolved", "curie": "UMLS:C0596290"},
+                "summary": {
+                    "total_edges": 0,
+                    "items": [],
+                    "categories": [],
+                    "predicates": [],
+                },
+            },
+        },
+    }
+
+    panel = node_action_panel(path, context, selected_node_id="n1")
+    text = [getattr(component, "children", None) for component in _walk_components(panel)]
+
+    assert "Summary: 0 incident edges across 0 predicate/category groups." in text
+    assert "No ROBOKOP incident edges were reported for this bridge CURIE." in text
+
+
+def test_node_action_panel_shows_empty_robokop_page() -> None:
+    path = {"nodes": [{"element_id": "n1"}], "edges": []}
+    context = {
+        "base_subgraph": {
+            "nodes": [{"id": "n1", "curie": "NCBIGene:5728", "label": "PTEN"}],
+            "edges": [],
+        },
+        "semantic_subgraphs": {},
+        "robokop_subgraphs": {},
+        "hidden_ids": [],
+        "robokop_state": {
+            "n1": {
+                "provider_mode": "live",
+                "bridge": {"status": "resolved", "curie": "NCBIGene:5728"},
+                "summary": {
+                    "total_edges": 4,
+                    "items": [{"predicate": "biolink:affects", "category": "biolink:Drug", "count": 4}],
+                    "categories": ["biolink:Drug"],
+                    "predicates": ["biolink:affects"],
+                },
+                "expansion": {
+                    "config": {
+                        "category": "biolink:Drug",
+                        "predicate": "biolink:affects",
+                        "direction": "incoming",
+                        "limit": 3,
+                        "offset": 0,
+                    },
+                    "edges": [],
+                    "total_available": 3,
+                    "diagnostics": {"direction_filtered_count": 3},
+                },
+            },
+        },
+    }
+
+    panel = node_action_panel(path, context, selected_node_id="n1")
+    text = [getattr(component, "children", None) for component in _walk_components(panel)]
+
+    assert (
+        "Fetched 0 of 3 ROBOKOP edge(s) at offset 0 with limit 3 "
+        "(category biolink:Drug; predicate biolink:affects; direction incoming). "
+        "3 edge(s) were hidden by the direction filter. Try changing category, predicate, direction, or offset."
+    ) in text
+
+
+def test_robokop_summary_callback_does_not_require_post_summary_controls() -> None:
+    app = create_app()
+    summary_callbacks = [
+        metadata
+        for metadata in app.callback_map.values()
+        if any(item["id"] == "robokop-summary-button" for item in metadata.get("inputs", []))
+    ]
+
+    assert len(summary_callbacks) == 1
+    state_ids = {item["id"] for item in summary_callbacks[0]["state"]}
+    assert "robokop-category-filter-dropdown" not in state_ids
+    assert "robokop-predicate-filter-dropdown" not in state_ids
+    assert "robokop-direction-dropdown" not in state_ids
+    assert "robokop-limit-input" not in state_ids
+    assert "robokop-offset-input" not in state_ids
+
+
+def test_robokop_subgraph_is_merged_and_rendered_as_remote() -> None:
+    path = {
+        "id": "path-1",
+        "nodes": [{"element_id": "n1"}],
+        "edges": [],
+    }
+    context = {
+        "base_subgraph": {"nodes": [{"id": "n1", "label": "PTEN"}], "edges": []},
+        "semantic_subgraphs": {},
+        "robokop_subgraphs": {},
+        "hidden_ids": [],
+        "positions": {},
+        "focus_ids": ["n1"],
+    }
+    _add_robokop_edge_to_context(
+        context,
+        "n1",
+        {
+            "edge_id": "robokop:e1",
+            "adjacent_curie": "DRUGBANK:DB00515",
+            "direction": "outgoing",
+            "object_name": "cisplatin",
+            "object_categories": ["biolink:Drug"],
+            "predicate": "biolink:affects",
+            "primary_knowledge_source": "infores:test",
+        },
+    )
+
+    subgraph = visible_subgraph(path, context)
+    elements = cytoscape_elements(path, subgraph, context)
+    classes_by_id = {element["data"]["id"]: element.get("classes", "") for element in elements}
+
+    assert "remote-node" in classes_by_id["robokop:DRUGBANK:DB00515"]
+    assert "remote-edge" in classes_by_id["robokop:e1"]
 
 
 def test_expanded_focus_nodes_are_green_unless_on_initial_path() -> None:

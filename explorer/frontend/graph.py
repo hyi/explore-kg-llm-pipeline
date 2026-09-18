@@ -12,7 +12,8 @@ from explorer.frontend.constants import NODE_LABEL_MAX_LENGTH
 def visible_subgraph(path: dict[str, Any], context: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
     merged = merge_subgraphs(
         context.get("base_subgraph") or {"nodes": [], "edges": []},
-        list((context.get("semantic_subgraphs") or {}).values()),
+        list((context.get("semantic_subgraphs") or {}).values())
+        + list((context.get("robokop_subgraphs") or {}).values()),
     )
     protected = {node["element_id"] for node in path.get("nodes", [])}
     hidden = set(context.get("hidden_ids", [])) - protected
@@ -66,6 +67,7 @@ def cytoscape_elements(
                     "labels": ", ".join(node.get("labels", [])),
                     "is_path": node_id in path_node_ids,
                     "is_focus": node_id in focus_ids,
+                    "source_graph": node.get("source_graph") or "litcoin",
                 },
                 "position": position,
                 "selected": node_id == selected,
@@ -74,6 +76,8 @@ def cytoscape_elements(
                     if node_id in path_node_ids
                     else "focus-node"
                     if node_id in focus_ids
+                    else "remote-node"
+                    if node.get("source_graph") == "robokop"
                     else "context-node"
                 ),
             }
@@ -84,6 +88,8 @@ def cytoscape_elements(
             classes.append("path-edge")
         if edge.get("kind") == "semantic":
             classes.append("semantic-edge")
+        if edge.get("source_graph") == "robokop":
+            classes.append("remote-edge")
         elements.append(
             {
                 "data": {
@@ -91,6 +97,7 @@ def cytoscape_elements(
                     "source": edge["source"],
                     "target": edge["target"],
                     "label": str(edge.get("label") or "").replace("biolink:", ""),
+                    "source_graph": edge.get("source_graph") or "litcoin",
                 },
                 "classes": " ".join(classes),
             }
@@ -133,7 +140,8 @@ def initial_positions(
 def seed_new_positions(context: dict[str, Any], anchor_id: str) -> None:
     subgraph = merge_subgraphs(
         context.get("base_subgraph") or {"nodes": [], "edges": []},
-        list((context.get("semantic_subgraphs") or {}).values()),
+        list((context.get("semantic_subgraphs") or {}).values())
+        + list((context.get("robokop_subgraphs") or {}).values()),
     )
     positions = context.setdefault("positions", {})
     anchor = positions.get(anchor_id, {"x": 460.0, "y": 300.0})
@@ -186,6 +194,7 @@ def node_action_panel(
                 [
                     html.Strong(node.get("label") or selected_node_id),
                     html.Span(", ".join(node.get("labels", [])), className="node-labels"),
+                    html.Span(f"Bridge CURIE: {node.get('curie') or 'not available'}", className="node-labels"),
                     html.Span(f"Connected edges in view: {incident_count}", className="node-labels"),                    
                 ],
                 className="selected-node-copy",
@@ -285,6 +294,7 @@ def node_action_panel(
                 className="button-row",
             )
     )
+    children.append(_robokop_controls(context, selected_node_id, node))
     return html.Div(
         children,
         className="node-actions",
@@ -293,6 +303,209 @@ def node_action_panel(
 
 def _dropdown_options(values: list[str] | tuple[str, ...]) -> list[dict[str, str]]:
     return [{"label": value, "value": value} for value in values]
+
+
+def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict[str, Any]) -> Any:
+    robokop_state = (context.get("robokop_state") or {}).get(selected_node_id) or {}
+    bridge = robokop_state.get("bridge") or {}
+    summary = robokop_state.get("summary") or {}
+    expansion = robokop_state.get("expansion") or {}
+    config = expansion.get("config") or {}
+    provider_mode = robokop_state.get("provider_mode") or "not queried"
+    error = robokop_state.get("error")
+    summary_items = summary.get("items") or []
+    category_options = _dropdown_options(summary.get("categories") or [])
+    predicate_options = _dropdown_options(summary.get("predicates") or [])
+    limit_value = int(config.get("limit") or context.get("robokop_limit") or 10)
+    offset_value = int(config.get("offset") or context.get("robokop_offset") or 0)
+    selected_edge_ids = set(robokop_state.get("selected_edge_ids") or [])
+
+    children: list[Any] = [
+        html.H4("ROBOKOP expansion"),
+        html.Div(
+            [
+                html.Span(f"Mode: {provider_mode}", className=f"source-badge {provider_mode}"),
+                html.Span(f"Bridge: {bridge.get('curie') or node.get('curie') or 'unresolved'}", className="node-labels"),
+            ],
+            className="robokop-meta-row",
+        ),
+        html.Button(
+            "Fetch ROBOKOP summary",
+            id="robokop-summary-button",
+            n_clicks=0,
+            className="secondary-button",
+        ),
+    ]
+    if error:
+        children.append(html.Div(error, className="node-inline-message error"))
+    if bridge.get("status") and bridge.get("status") != "resolved":
+        children.append(html.Div(bridge.get("reason") or bridge["status"], className="node-inline-message"))
+    if summary:
+        children.append(
+            html.Div(
+                f"Summary: {summary.get('total_edges', 0)} incident edges across "
+                f"{len(summary_items)} predicate/category groups.",
+                className="node-labels",
+            )
+        )
+    if summary and not summary_items:
+        children.append(
+            html.Div(
+                "No ROBOKOP incident edges were reported for this bridge CURIE.",
+                className="node-inline-message",
+            )
+        )
+    if summary_items:
+        children.extend(
+            [
+                html.Div(
+                    [
+                        html.Label("ROBOKOP category", htmlFor="robokop-category-filter-dropdown"),
+                        dcc.Dropdown(
+                            id="robokop-category-filter-dropdown",
+                            options=category_options,
+                            value=config.get("category"),
+                            placeholder="Optional adjacent category",
+                            className="expansion-select",
+                        ),
+                        html.Label("ROBOKOP predicate", htmlFor="robokop-predicate-filter-dropdown"),
+                        dcc.Dropdown(
+                            id="robokop-predicate-filter-dropdown",
+                            options=predicate_options,
+                            value=config.get("predicate"),
+                            placeholder="Optional predicate",
+                            className="expansion-select",
+                        ),
+                    ],
+                    className="expansion-control-row",
+                ),
+                html.Div(
+                    [
+                        html.Label("Direction", htmlFor="robokop-direction-dropdown"),
+                        dcc.Dropdown(
+                            id="robokop-direction-dropdown",
+                            options=[
+                                {"label": "Either", "value": "either"},
+                                {"label": "Outgoing", "value": "outgoing"},
+                                {"label": "Incoming", "value": "incoming"},
+                            ],
+                            value=config.get("direction") or "either",
+                            clearable=False,
+                            className="expansion-select",
+                        ),
+                        html.Label("Limit", htmlFor="robokop-limit-input"),
+                        dcc.Input(
+                            id="robokop-limit-input",
+                            type="number",
+                            min=1,
+                            max=25,
+                            step=1,
+                            value=limit_value,
+                            className="expansion-number",
+                        ),
+                        html.Label("Offset", htmlFor="robokop-offset-input"),
+                        dcc.Input(
+                            id="robokop-offset-input",
+                            type="number",
+                            min=0,
+                            step=1,
+                            value=offset_value,
+                            className="expansion-number",
+                        ),
+                    ],
+                    className="expansion-control-row",
+                ),
+                html.Div(
+                    [
+                        html.Button(
+                            "Previous page",
+                            id="robokop-prev-page-button",
+                            n_clicks=0,
+                            className="secondary-button",
+                        ),
+                        html.Button(
+                            "Fetch ROBOKOP page",
+                            id="robokop-expand-button",
+                            n_clicks=0,
+                            className="secondary-button",
+                        ),
+                        html.Button(
+                            "Next page",
+                            id="robokop-next-page-button",
+                            n_clicks=0,
+                            className="secondary-button",
+                        ),
+                    ],
+                    className="button-row",
+                ),
+                html.Div(
+                    "ROBOKOP pages are bounded. Fetched edges appear below as candidate cards; click Add remote edge to place one in the graph.",
+                    className="hint",
+                ),
+            ]
+        )
+    if expansion:
+        children.append(_robokop_page_status(expansion))
+    if expansion.get("edges"):
+        children.append(
+            html.Div(
+                [
+                    _robokop_edge_row(edge, selected=edge.get("edge_id") in selected_edge_ids)
+                    for edge in expansion["edges"]
+                ],
+                className="robokop-edge-list",
+            )
+        )
+    return html.Div(children, className="robokop-controls")
+
+
+def _robokop_page_status(expansion: dict[str, Any]) -> Any:
+    edges = expansion.get("edges") or []
+    config = expansion.get("config") or {}
+    diagnostics = expansion.get("diagnostics") or {}
+    filtered_count = int(diagnostics.get("direction_filtered_count") or 0)
+    total_available = expansion.get("total_available")
+    total_text = f" of {total_available}" if total_available is not None else ""
+    filter_bits = [
+        f"category {config.get('category')}" if config.get("category") else "any category",
+        f"predicate {config.get('predicate')}" if config.get("predicate") else "any predicate",
+        f"direction {config.get('direction') or 'either'}",
+    ]
+    message = (
+        f"Fetched {len(edges)}{total_text} ROBOKOP edge(s) "
+        f"at offset {config.get('offset', 0)} with limit {config.get('limit', 10)} "
+        f"({'; '.join(filter_bits)})."
+    )
+    if filtered_count:
+        message += f" {filtered_count} edge(s) were hidden by the direction filter."
+    if not edges:
+        message += " Try changing category, predicate, direction, or offset."
+    return html.Div(message, className="node-inline-message" if not edges else "node-labels")
+
+
+def _robokop_edge_row(edge: dict[str, Any], *, selected: bool) -> Any:
+    source = edge.get("primary_knowledge_source") or "unknown source"
+    score = edge.get("score")
+    score_text = f"{float(score):.3f}" if score is not None else "n/a"
+    label = (
+        f"{edge.get('subject_curie')} -[{edge.get('predicate', '').replace('biolink:', '')}]-> "
+        f"{edge.get('object_curie')}"
+    )
+    reasons = ", ".join(edge.get("ranking_reasons") or [])
+    return html.Div(
+        [
+            html.Div(label, className="robokop-edge-title"),
+            html.Div(f"Score {score_text} | {source} | {reasons}", className="path-meta"),
+            html.Button(
+                "Added" if selected else "Add remote edge",
+                id={"type": "add-robokop-edge", "edge_id": edge.get("edge_id")},
+                n_clicks=0,
+                disabled=selected,
+                className="secondary-button",
+            ),
+        ],
+        className="robokop-edge-card selected" if selected else "robokop-edge-card",
+    )
 
 
 def cytoscape_stylesheet() -> list[dict[str, Any]]:
@@ -315,6 +528,7 @@ def cytoscape_stylesheet() -> list[dict[str, Any]]:
         },
         {"selector": ".path-node", "style": {"background-color": "#c05a2b", "width": 36, "height": 36}},
         {"selector": ".focus-node", "style": {"background-color": "#2f6f63", "width": 31, "height": 31}},
+        {"selector": ".remote-node", "style": {"background-color": "#547aa5", "shape": "diamond"}},
         {
             "selector": "node:selected",
             "style": {"border-color": "#111827", "border-width": 5, "overlay-opacity": 0.12},
@@ -338,5 +552,9 @@ def cytoscape_stylesheet() -> list[dict[str, Any]]:
         {
             "selector": ".semantic-edge",
             "style": {"line-color": "#5577b8", "line-style": "dashed", "width": 2, "opacity": 0.82},
+        },
+        {
+            "selector": ".remote-edge",
+            "style": {"line-color": "#547aa5", "line-style": "dotted", "width": 3, "opacity": 0.86},
         },
     ]
