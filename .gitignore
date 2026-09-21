@@ -216,6 +216,8 @@ marimo/_lsp/
 __marimo__/
 
 # Agents
-.agents
+.agents/*
+!.agents/skills/
 .codex
+.claude
 
