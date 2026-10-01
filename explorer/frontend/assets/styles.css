@@ -175,9 +175,54 @@ label {
   margin-bottom: 22px;
 }
 
+.workspace-sidebar {
+  display: grid;
+  gap: 16px;
+  position: sticky;
+  top: 12px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .path-list {
   display: grid;
   gap: 12px;
+}
+
+.path-list-overflow {
+  display: grid;
+  gap: 12px;
+  max-height: min(360px, 45vh);
+  overflow-y: auto;
+}
+
+.candidate-toggle {
+  margin-top: 12px;
+}
+
+.node-controls-panel > summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.node-controls-panel[open] > summary {
+  margin-bottom: 10px;
+}
+
+.node-controls-panel .node-actions {
+  display: grid;
+  gap: 12px;
+  align-items: stretch;
+  margin-top: 0;
+}
+
+.node-controls-panel .expansion-controls {
+  min-width: 0;
+}
+
+.node-controls-panel .expansion-control-row {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .path-card {
@@ -352,12 +397,10 @@ th {
   font-weight: 800;
 }
 
-.expansion-input,
 .expansion-select .Select-control {
   min-height: 36px;
 }
 
-.expansion-input,
 .expansion-number {
   width: 100%;
 }
@@ -406,14 +449,17 @@ th {
   color: #86611f;
 }
 
-.source-badge.live {
-  background: rgba(47, 111, 99, 0.12);
-  color: var(--green);
-}
-
 .robokop-edge-list {
   display: grid;
   gap: 8px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+
+.robokop-results > summary {
+  cursor: pointer;
+  font-weight: 800;
+  margin-bottom: 10px;
 }
 
 .robokop-edge-card {
@@ -484,6 +530,12 @@ th {
 
   .app-title {
     font-size: clamp(31px, 9vw, 44px);
+  }
+
+  .workspace-sidebar {
+    position: static;
+    max-height: none;
+    overflow: visible;
   }
 
   .graph-toolbar,

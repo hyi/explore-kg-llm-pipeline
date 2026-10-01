@@ -15,8 +15,17 @@ dependencies = [
     "neo4j>=6.0.3",
     "pandas>=2.3.3",
     "python-dotenv>=1.2.1",
+    "torch>=2.14.0",
     "transformers[torch]>=5.16.1",
 ]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cpu", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [dependency-groups]
 dev = [

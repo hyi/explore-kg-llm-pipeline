@@ -5,10 +5,10 @@ from typing import Any
 import dash_cytoscape as cyto
 from dash import dcc, html
 
+from explorer.frontend.constants import CANDIDATE_PREVIEW_LIMIT
 from explorer.frontend.graph import (
     cytoscape_elements,
     cytoscape_stylesheet,
-    node_action_panel,
     visible_subgraph,
 )
 
@@ -20,16 +20,36 @@ def status(children: Any, level: str) -> Any:
 def render_candidate_path_cards(
     paths: list[dict[str, Any]] | None,
     selected_path_id: str | None,
+    expanded: bool = False,
 ) -> list[Any] | Any:
     if not paths:
         return html.Div("No paths to display yet.", className="empty")
 
+    indexed_paths = list(enumerate(paths, start=1))
+    if len(indexed_paths) > CANDIDATE_PREVIEW_LIMIT:
+        preview = indexed_paths[:CANDIDATE_PREVIEW_LIMIT]
+        if selected_path_id not in {path["id"] for _, path in preview}:
+            selected = next(
+                ((index, path) for index, path in indexed_paths[CANDIDATE_PREVIEW_LIMIT:] if path["id"] == selected_path_id),
+                None,
+            )
+            if selected:
+                preview[-1] = selected
+        if expanded:
+            preview_ids = {path["id"] for _, path in preview}
+            indexed_paths = preview + [item for item in indexed_paths if item[1]["id"] not in preview_ids]
+        else:
+            indexed_paths = preview
+
     cards = []
-    for index, path in enumerate(paths, start=1):
+    for index, path in indexed_paths:
         selected = path["id"] == selected_path_id
-        anchor_metadata = path.get("anchor_metadata") or {}
-        ranking_reasons = anchor_metadata.get("ranking_reasons") or []
-        reason_text = ", ".join(str(reason) for reason in ranking_reasons[1:3])
+        nodes = path.get("nodes") or []
+        endpoint_ids = (
+            f"Subject ID: {nodes[0]['id']} | Object ID: {nodes[-1]['id']}"
+            if nodes and nodes[0].get("id") and nodes[-1].get("id")
+            else None
+        )
         cards.append(
             html.Button(
                 [
@@ -41,18 +61,18 @@ def render_candidate_path_cards(
                         className="path-card-top",
                     ),
                     html.Div(path.get("summary") or "(empty path)", className="path-summary"),
-                    html.Div(
-                        f"Length: {path.get('length', 0)}"
-                        + (f" | Seed predicate: {path.get('seed_predicate')}" if path.get("seed_predicate") else "")
-                        + (f" | Anchor: {reason_text}" if reason_text else ""),
-                        className="path-meta",
-                    ),
+                    *([html.Div(endpoint_ids, className="path-meta")] if endpoint_ids else []),
                 ],
                 id={"type": "select-path", "path_id": path["id"]},
                 n_clicks=0,
                 className=f"path-card{' selected' if selected else ''}",
             )
         )
+    if expanded and len(cards) > CANDIDATE_PREVIEW_LIMIT:
+        return [
+            *cards[:CANDIDATE_PREVIEW_LIMIT],
+            html.Div(cards[CANDIDATE_PREVIEW_LIMIT:], className="path-list-overflow"),
+        ]
     return cards
 
 
@@ -65,10 +85,13 @@ def render_path_details(
         return html.Div("Select a candidate path to inspect its details.", className="empty")
 
     graph_section = html.Div("Loading path context graph...", className="empty")
-    selected_node_id = None
     if context:
         subgraph = visible_subgraph(path, context)
-        selected_node_id = context.get("selected_node_id")
+        viewport = {}
+        if context.get("zoom") is not None:
+            viewport["zoom"] = context["zoom"]
+        if context.get("pan") is not None:
+            viewport["pan"] = context["pan"]
         graph_section = cyto.Cytoscape(
             id={
                 "type": "context-graph",
@@ -76,12 +99,11 @@ def render_path_details(
                 "revision": context.get("graph_revision", 0),
             },
             elements=cytoscape_elements(path, subgraph, context),
-            layout={"name": "preset"},
+            layout={"name": "preset", "fit": True, "padding": 90},
             style={"width": "100%", "height": "640px"},
             minZoom=0.15,
             maxZoom=3,
-            zoom=context.get("zoom", 1),
-            pan=context.get("pan", {"x": 0, "y": 0}),
+            **viewport,
             zoomingEnabled=True,
             userZoomingEnabled=False,
             userPanningEnabled=True,
@@ -126,13 +148,6 @@ def render_path_details(
                 ),
             ],
             className="details-title-row",
-        ),
-        html.Div(
-            [
-                small_table("Nodes", [node_row(node) for node in path["nodes"]]),
-                small_table("Edges", [edge_row(edge) for edge in path["edges"]]),
-            ],
-            className="tables-grid",
         ),
         html.Details(
             [
@@ -193,7 +208,6 @@ def render_path_details(
                     ],
                     className="graph-toolbar",
                 ),
-                html.Div(id="node-action-panel", children=node_action_panel(path, context, selected_node_id)),
                 graph_section,
             ],
             className="graph-wrap",
@@ -212,45 +226,6 @@ def render_path_details(
             className="note-wrap",
         ),
     ]
-
-
-def small_table(title: str, rows: list[dict[str, Any]]) -> Any:
-    if not rows:
-        return html.Div([html.H3(title), html.Div("No rows.", className="empty")], className="table-wrap")
-    headers = list(rows[0].keys())
-    return html.Div(
-        [
-            html.H3(title),
-            html.Table(
-                [
-                    html.Thead(html.Tr([html.Th(header) for header in headers])),
-                    html.Tbody(
-                        [
-                            html.Tr([html.Td(str(row.get(header, ""))) for header in headers])
-                            for row in rows
-                        ]
-                    ),
-                ]
-            ),
-        ],
-        className="table-wrap",
-    )
-
-
-def node_row(node: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "name": node.get("name"),
-        "id": node.get("id"),
-        "labels": ", ".join(node.get("labels", [])),
-    }
-
-
-def edge_row(edge: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "type": edge.get("type"),
-        "subject": edge.get("subject"),
-        "object": edge.get("object"),
-    }
 
 
 def saved_session_view(session_store: dict[str, Any]) -> Any:

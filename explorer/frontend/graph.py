@@ -206,15 +206,6 @@ def node_action_panel(
     children.append(
         html.Div(
             [
-                html.Label("Expansion query", htmlFor="expansion-query-input"),
-                dcc.Input(
-                    id="expansion-query-input",
-                    type="text",
-                    value=context.get("expansion_query") or context.get("active_query") or "",
-                    placeholder="Optional refined query for connected neighbors",
-                    debounce=True,
-                    className="expansion-input",
-                ),
                 html.Div(
                     [
                         html.Label("Direction", htmlFor="expansion-direction-dropdown"),
@@ -311,7 +302,7 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
     summary = robokop_state.get("summary") or {}
     expansion = robokop_state.get("expansion") or {}
     config = expansion.get("config") or {}
-    provider_mode = robokop_state.get("provider_mode") or "not queried"
+    provider_mode = expansion.get("provider_mode") or summary.get("provider_mode") or robokop_state.get("provider_mode")
     error = robokop_state.get("error")
     summary_items = summary.get("items") or []
     category_options = _dropdown_options(summary.get("categories") or [])
@@ -323,10 +314,7 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
     children: list[Any] = [
         html.H4("ROBOKOP expansion"),
         html.Div(
-            [
-                html.Span(f"Mode: {provider_mode}", className=f"source-badge {provider_mode}"),
-                html.Span(f"Bridge: {bridge.get('curie') or node.get('curie') or 'unresolved'}", className="node-labels"),
-            ],
+            html.Span(f"Bridge: {bridge.get('curie') or node.get('curie') or 'unresolved'}", className="node-labels"),
             className="robokop-meta-row",
         ),
         html.Button(
@@ -348,6 +336,8 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
                 className="node-labels",
             )
         )
+    if provider_mode == "fixture" and (summary or expansion):
+        children.append(html.Span("Fixture data (not live)", className="source-badge fixture"))
     if summary and not summary_items:
         children.append(
             html.Div(
@@ -418,20 +408,8 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
                 html.Div(
                     [
                         html.Button(
-                            "Previous page",
-                            id="robokop-prev-page-button",
-                            n_clicks=0,
-                            className="secondary-button",
-                        ),
-                        html.Button(
-                            "Fetch ROBOKOP page",
+                            "Fetch ROBOKOP edges",
                             id="robokop-expand-button",
-                            n_clicks=0,
-                            className="secondary-button",
-                        ),
-                        html.Button(
-                            "Next page",
-                            id="robokop-next-page-button",
                             n_clicks=0,
                             className="secondary-button",
                         ),
@@ -439,7 +417,7 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
                     className="button-row",
                 ),
                 html.Div(
-                    "ROBOKOP pages are bounded. Fetched edges appear below as candidate cards; click Add remote edge to place one in the graph.",
+                    "ROBOKOP pages are bounded. Fetched edges appear below as candidate cards; use Add or Remove to control which edges appear in the graph.",
                     className="hint",
                 ),
             ]
@@ -448,12 +426,40 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
         children.append(_robokop_page_status(expansion))
     if expansion.get("edges"):
         children.append(
+            html.Details(
+                [
+                    html.Summary(f"Remote edge candidates ({len(expansion['edges'])})"),
+                    html.Div(
+                        [
+                            _robokop_edge_row(edge, selected=edge.get("edge_id") in selected_edge_ids)
+                            for edge in expansion["edges"]
+                        ],
+                        className="robokop-edge-list",
+                    ),
+                ],
+                open=True,
+                className="robokop-results",
+            )
+        )
+    if summary_items:
+        children.append(
             html.Div(
                 [
-                    _robokop_edge_row(edge, selected=edge.get("edge_id") in selected_edge_ids)
-                    for edge in expansion["edges"]
+                    html.Button(
+                        "Previous",
+                        id="robokop-prev-page-button",
+                        n_clicks=0,
+                        className="secondary-button",
+                    ),
+                    html.Button(
+                        "Next",
+                        id="robokop-next-page-button",
+                        n_clicks=0,
+                        className="secondary-button",
+                    ),
                 ],
-                className="robokop-edge-list",
+                className="button-row",
+                style={} if expansion else {"display": "none"},
             )
         )
     return html.Div(children, className="robokop-controls")
@@ -498,10 +504,10 @@ def _robokop_edge_row(edge: dict[str, Any], *, selected: bool) -> Any:
             html.Div(label, className="robokop-edge-title"),
             html.Div(f"Score {score_text} | {source} | {reasons}", className="path-meta"),
             html.Button(
-                "Added" if selected else "Add remote edge",
-                id={"type": "add-robokop-edge", "edge_id": edge.get("edge_id")},
+                "Remove" if selected else "Add",
+                id={"type": "toggle-robokop-edge", "edge_id": edge.get("edge_id")},
                 n_clicks=0,
-                disabled=selected,
+                disabled=False,
                 className="secondary-button",
             ),
         ],

@@ -18,6 +18,7 @@ from explorer.frontend.callbacks import (
     _add_robokop_edge_to_context,
     _bounded_nonnegative_int,
     _bounded_robokop_limit,
+    _remove_robokop_edge_from_context,
 )
 from explorer.frontend.graph import visible_subgraph
 
@@ -219,6 +220,44 @@ def test_bounded_controls_and_selected_remote_edge_merge_preserve_provenance() -
     assert edge_ids[local_edge_id].get("source_graph") is None
     assert edge_ids["robokop:r-local"]["source_graph"] == "robokop"
     assert edge_ids["robokop:r-local"]["properties"]["primary_knowledge_source"] == "infores:robokop-ctd"
+
+
+def test_robokop_edge_toggle_preserves_shared_node_and_local_graph() -> None:
+    path = {"nodes": [{"element_id": "n1"}, {"element_id": "n2"}], "edges": [{"element_id": "r-local"}]}
+    context = {
+        "base_subgraph": {
+            "nodes": [{"id": "n1"}, {"id": "n2"}],
+            "edges": [{"id": "r-local", "source": "n1", "target": "n2"}],
+        },
+        "robokop_subgraphs": {},
+        "robokop_state": {"n1": {"selected_edge_ids": []}},
+    }
+    remote_edge = {
+        "edge_id": "robokop:e1",
+        "adjacent_curie": "DRUGBANK:DB00515",
+        "direction": "outgoing",
+        "predicate": "biolink:affects",
+    }
+    second_edge = {**remote_edge, "edge_id": "robokop:e2"}
+
+    _add_robokop_edge_to_context(context, "n1", remote_edge)
+    _add_robokop_edge_to_context(context, "n1", second_edge)
+    _remove_robokop_edge_from_context(context, "n1", remote_edge["edge_id"])
+
+    visible = visible_subgraph(path, context)
+    assert {edge["id"] for edge in visible["edges"]} == {"r-local", "robokop:e2"}
+    assert "robokop:DRUGBANK:DB00515" in {node["id"] for node in visible["nodes"]}
+    assert context["robokop_state"]["n1"]["selected_edge_ids"] == ["robokop:e2"]
+
+    _remove_robokop_edge_from_context(context, "n1", second_edge["edge_id"])
+    visible = visible_subgraph(path, context)
+    assert {edge["id"] for edge in visible["edges"]} == {"r-local"}
+    assert {node["id"] for node in visible["nodes"]} == {"n1", "n2"}
+    assert context["robokop_state"]["n1"]["selected_edge_ids"] == []
+
+    _add_robokop_edge_to_context(context, "n1", remote_edge)
+    assert {edge["id"] for edge in visible_subgraph(path, context)["edges"]} == {"r-local", "robokop:e1"}
+    assert context["robokop_state"]["n1"]["selected_edge_ids"] == ["robokop:e1"]
 
 
 def edge_wrapper(

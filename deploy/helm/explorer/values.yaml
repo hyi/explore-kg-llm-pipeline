@@ -47,10 +47,12 @@ ingress:
        - kg-explorer.apps.renci.org
 
 resources: 
+  requests:
+    ephemeral-storage: 512Mi
   limits:
     cpu: 1
     memory: 6Gi
-    ephemeral-storage: 100Mi
+    ephemeral-storage: 2Gi
 
 cache:
   path: /tmp/kg_explorer/path_search_cache.json

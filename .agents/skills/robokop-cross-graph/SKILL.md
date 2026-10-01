@@ -54,8 +54,14 @@ subject, predicate, and object look similar — preserve source-specific evidenc
 
 User-initiated, one-hop ROBOKOP expansion only. For a selected bridge entity: (1) fetch and display
 an edge summary first, (2) let the user choose or confirm category and predicate filters, (3) fetch
-a small page of incident edges, (4) rank the returned page against the active or refined query,
-(5) let the user select which remote edges to add to the visible exploration.
+a small page of incident edges, (4) rank the returned page against the selected path's source
+query, (5) let the user select which remote edges to add to or remove from the visible exploration.
+
+The Node actions sidebar fetches ROBOKOP summaries before edge pages. Fetch ROBOKOP edges is
+separate from Previous and Next, which appear beneath the fetched page only after a page is
+available. Each candidate edge has an Add/Remove toggle; removing it prunes only its unshared
+remote context, preserving local LitCoin edges and other selected remote edges. Summary refreshes
+preserve selected remote-edge IDs. No separate expansion-query input is exposed.
 
 ROBOKOP has no stored embeddings available through RoboMCP — ranking starts with keyword relevance,
 query-intent compatibility, and explicit type/predicate filters. On-demand embedding reranking of a
@@ -63,8 +69,10 @@ small fetched candidate set is future work; it must be cached, bounded, labeled,
 against the simpler lexical baseline before being added.
 
 Never imply that a limited page is the complete ROBOKOP neighborhood. Show counts, limits,
-pagination state, loading state, source badges, and remote errors clearly. A ROBOKOP timeout or
-outage must not corrupt the LitCoin session or remove locally explored paths.
+pagination state, loading state, and remote errors clearly. Do not show routine "Mode: live" or
+"Mode: not queried" badges; label fetched fixture results explicitly as not live. Retain
+provider_mode in result and UI state to distinguish live responses from fixtures. A ROBOKOP timeout
+or outage must not corrupt the LitCoin session or remove locally explored paths.
 
 ## Demo Scope
 

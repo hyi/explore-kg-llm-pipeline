@@ -12,6 +12,7 @@ def build_layout() -> html.Div:
             dcc.Store(id="client-state-store", storage_type="memory", data=new_client_state()),
             dcc.Store(id="session-store", storage_type="memory", data=empty_session_store()),
             dcc.Store(id="candidate-paths-store", storage_type="memory", data=[]),
+            dcc.Store(id="candidate-list-expanded", storage_type="memory", data=False),
             dcc.Store(id="selected-path-id-store", storage_type="memory"),
             dcc.Store(id="context-store", storage_type="memory", data={}),
             dcc.Store(id="graph-viewport-signal", storage_type="memory"),
@@ -82,10 +83,34 @@ def build_layout() -> html.Div:
                         [
                             html.Div(
                                 [
-                                    html.H2("Candidate Paths"),
-                                    html.Div(id="candidate-paths", className="path-list"),
+                                    html.Div(
+                                        [
+                                            html.H2("Candidate Paths"),
+                                            html.Div(id="candidate-paths", className="path-list"),
+                                            html.Button(
+                                                id="toggle-candidate-paths",
+                                                className="secondary-button candidate-toggle",
+                                                hidden=True,
+                                            ),
+                                        ],
+                                        className="panel candidates-panel",
+                                    ),
+                                    html.Details(
+                                        [
+                                            html.Summary("Node actions"),
+                                            html.Div(
+                                                id="node-action-panel",
+                                                children=html.Div(
+                                                    "Select a node in the graph to expand, compare, or collapse context.",
+                                                    className="node-actions empty",
+                                                ),
+                                            ),
+                                        ],
+                                        open=True,
+                                        className="panel node-controls-panel",
+                                    ),
                                 ],
-                                className="panel candidates-panel",
+                                className="workspace-sidebar",
                             ),
                             html.Div(id="path-details", className="panel details-panel"),
                         ],

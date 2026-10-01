@@ -17,7 +17,7 @@ instruction to reproduce ARK:
 
 * retain global retrieval for broad discovery and later re-anchoring
 * use bounded one-hop expansion for relational depth
-* rank local neighbors against the active query or a user-refined subquery
+* rank local neighbors against the query that produced the selected path
 * filter heterogeneous neighborhoods by node type and predicate when useful
 * stop expansion selectively rather than traversing indiscriminately
 * evaluate the latency and quality effects of increasing retrieval depth
@@ -73,21 +73,27 @@ labeling a single-channel result as hybrid.
 
 ## Human-Guided Neighborhood Retrieval
 
-The UI lets the user select a node, provide an optional refined expansion query, set direction, set
-a limit, and apply adjacent-category and predicate filters, then expand connected neighbors.
+The Node actions sidebar lets the user select a node, set direction and a limit, apply
+adjacent-category and predicate filters, then expand connected neighbors. There is no separate
+expansion-query field: the query that produced the selected candidate path drives ranking.
 Adjacent category and predicate filters are KG-populated multi-select dropdowns backed by Neo4j
 node labels and relationship types; selected values are OR filters. Ranking uses query intent,
 endpoint category compatibility, predicate-family compatibility, lexical matched-token diagnostics,
 and relationship-quality handling. Bounded expansion by limit is the available fallback exploration
 mechanism — there is no separate "show all unranked neighbors" button.
 
-When a user expands a LitCoin node or path, keep the active query available and allow an optional
-user-refined expansion query. Bounded controls: adjacent node category; relationship predicate or
-predicate family; incoming/outgoing/either direction; number of returned neighbors.
+When a user expands a LitCoin node, use the selected path's source query. Bounded controls: 
+adjacent node category; relationship predicate or predicate family; incoming/outgoing/either direction; 
+number of returned neighbors.
 
-Rank the filtered neighborhood against the active or refined query using the available lexical,
-semantic, and structural signals. Provide an explicit way to reveal additional or unranked
-neighbors so heuristic ranking does not hide the graph.
+Rank the filtered neighborhood against that query using the available lexical and structural
+signals. Bounded expansion by limit is the available fallback; there is no separate unranked
+neighbor reveal action.
+
+Candidate Paths previews five cards, with Show all for additional paths. Cards show the path
+summary, score, and subject/object endpoint node IDs; the Path Details panel omits the former
+Path composition node/edge tables. Node actions stay in the sidebar beneath Candidate Paths so
+the context subgraph remains visible during expansion.
 
 Do not automatically execute an unbounded multi-hop traversal. Preserve human selection between
 meaningful expansions. Show unexplored-neighbor counts when available and make retrieval limits

@@ -33,6 +33,7 @@ from explorer.frontend.components import (
     status,
 )
 from explorer.frontend.constants import (
+    CANDIDATE_PREVIEW_LIMIT,
     DEFAULT_PATH_HITS,
     PATHS_PER_SEMANTIC_HIT,
     SEMANTIC_FETCH_BUFFER,
@@ -126,17 +127,47 @@ def register_callbacks(app: Dash) -> None:
         )
 
     @app.callback(
+        Output("candidate-list-expanded", "data"),
+        Input("toggle-candidate-paths", "n_clicks"),
+        Input("candidate-paths-store", "data"),
+        State("candidate-list-expanded", "data"),
+        prevent_initial_call=True,
+    )
+    def toggle_candidate_paths(
+        n_clicks: int | None,
+        _paths: list[dict[str, Any]] | None,
+        expanded: bool | None,
+    ) -> bool:
+        if ctx.triggered_id == "candidate-paths-store":
+            return False
+        if not n_clicks:
+            raise PreventUpdate
+        return not bool(expanded)
+
+    @app.callback(
         Output("candidate-paths", "children"),
+        Output("toggle-candidate-paths", "children"),
+        Output("toggle-candidate-paths", "hidden"),
+        Output("candidate-paths", "className"),
         Input("client-state-store", "data"),
         Input("candidate-paths-store", "data"),
         Input("selected-path-id-store", "data"),
+        Input("candidate-list-expanded", "data"),
     )
     def render_candidate_paths(
         _client_state: dict[str, Any] | None,
         paths: list[dict[str, Any]] | None,
         selected_path_id: str | None,
-    ) -> list[Any] | Any:
-        return render_candidate_path_cards(paths, selected_path_id)
+        expanded: bool | None,
+    ) -> tuple[Any, str, bool, str]:
+        path_count = len(paths or [])
+        show_all = bool(expanded) and path_count > CANDIDATE_PREVIEW_LIMIT
+        return (
+            render_candidate_path_cards(paths, selected_path_id, expanded=show_all),
+            "Show less" if show_all else f"Show all ({path_count})",
+            path_count <= CANDIDATE_PREVIEW_LIMIT,
+            "path-list expanded" if show_all else "path-list",
+        )
 
     @app.callback(
         Output("selected-path-id-store", "data", allow_duplicate=True),
@@ -144,7 +175,7 @@ def register_callbacks(app: Dash) -> None:
         prevent_initial_call=True,
     )
     def select_path(_clicks: list[int]) -> str:
-        if not ctx.triggered_id:
+        if not ctx.triggered_id or not any(_clicks or []):
             raise PreventUpdate
         return ctx.triggered_id["path_id"]
 
@@ -194,8 +225,6 @@ def register_callbacks(app: Dash) -> None:
             "connected_expansion_limit": CONNECTED_EXPANSION_LIMIT,
             "neighborhood_filter_options": filter_options,
             "graph_revision": 0,
-            "zoom": 1,
-            "pan": {"x": 0, "y": 0},
         }
         return context_store
 
@@ -220,24 +249,19 @@ def register_callbacks(app: Dash) -> None:
 
     @app.callback(
         Output("node-action-panel", "children"),
-        Input({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
         Input("context-store", "data"),
-        State("selected-path-id-store", "data"),
+        Input("selected-path-id-store", "data"),
         State("candidate-paths-store", "data"),
         prevent_initial_call=True,
     )
     def render_selected_node_actions(
-        selected_node_data_values: list[list[dict[str, Any]] | None] | None,
         context_store: dict[str, Any] | None,
         selected_path_id: str | None,
         paths: list[dict[str, Any]] | None,
     ) -> Any:
         path = find_path(paths or [], selected_path_id)
         context = (context_store or {}).get(selected_path_id or "")
-        if ctx.triggered_id == "context-store":
-            node_id = context.get("selected_node_id") if context else None
-        else:
-            node_id = _active_selected_node_id(selected_node_data_values)
+        node_id = context.get("selected_node_id") if context else None
         return node_action_panel(path, context, node_id)
 
     @app.callback(
@@ -266,14 +290,13 @@ def register_callbacks(app: Dash) -> None:
         Input("expand-connected-button", "n_clicks"),
         Input("expand-similar-button", "n_clicks"),
         Input("collapse-node-button", "n_clicks"),
-        Input({"type": "add-robokop-edge", "edge_id": ALL}, "n_clicks"),
+        Input({"type": "toggle-robokop-edge", "edge_id": ALL}, "n_clicks"),
         State("selected-path-id-store", "data"),
         State("candidate-paths-store", "data"),
         State("context-store", "data"),
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "elements"),
         State("query-input", "value"),
-        State("expansion-query-input", "value"),
         State("expansion-direction-dropdown", "value"),
         State("expansion-limit-input", "value"),
         State("expansion-category-filter-dropdown", "value"),
@@ -291,7 +314,6 @@ def register_callbacks(app: Dash) -> None:
         selected_node_data_values: list[list[dict[str, Any]] | None] | None,
         elements_values: list[list[dict[str, Any]] | None] | None,
         current_query: str | None,
-        expansion_query: str | None,
         expansion_direction: str | None,
         expansion_limit: float | str | None,
         expansion_categories: list[str] | str | None,
@@ -313,16 +335,22 @@ def register_callbacks(app: Dash) -> None:
         context["selected_node_id"] = node_id
         context["positions"] = positions_from_elements(_active_elements(elements_values), context.get("positions", {}))
         path_node_ids = {node["element_id"] for node in path["nodes"]}
-        if isinstance(action, dict) and action.get("type") == "add-robokop-edge":
+        if isinstance(action, dict) and action.get("type") == "toggle-robokop-edge":
             edge_id = str(action.get("edge_id") or "")
             edge = _robokop_edge_from_context(context, node_id, edge_id)
             if not edge:
                 return no_update, status("Selected ROBOKOP edge is no longer available.", "warning")
-            _add_robokop_edge_to_context(context, node_id, edge)
-            seed_new_positions(context, node_id)
+            state = (context.get("robokop_state") or {}).get(node_id) or {}
+            if edge_id in state.get("selected_edge_ids", []):
+                _remove_robokop_edge_from_context(context, node_id, edge_id)
+                message = "Removed selected ROBOKOP edge from the visible graph."
+            else:
+                _add_robokop_edge_to_context(context, node_id, edge)
+                seed_new_positions(context, node_id)
+                message = "Added selected ROBOKOP edge to the visible graph."
             context_store = deepcopy(context_store or {})
             context_store[selected_path_id] = context
-            return context_store, status("Added selected ROBOKOP edge to the visible graph.", "success")
+            return context_store, status(message, "success")
 
         try:
             graph = Neo4jGraphAdapter()
@@ -345,9 +373,8 @@ def register_callbacks(app: Dash) -> None:
                     context.pop("node_message", None)
                     context.pop("node_message_node_id", None)
                     active_query = (
-                        expansion_query
+                        path.get("source_query")
                         or context.get("active_query")
-                        or path.get("source_query")
                         or current_query
                         or ""
                     ).strip()
@@ -355,7 +382,6 @@ def register_callbacks(app: Dash) -> None:
                     categories = _normalize_filter_values(expansion_categories)
                     predicates = _normalize_filter_values(expansion_predicates)
                     context["active_query"] = active_query
-                    context["expansion_query"] = active_query
                     context["connected_expansion_limit"] = limit
                     context["expansion_direction"] = expansion_direction or "either"
                     context["expansion_categories"] = categories
@@ -385,7 +411,7 @@ def register_callbacks(app: Dash) -> None:
                     context.get("robokop_state", {}).pop(node_id, None)
                     if node_id not in path_node_ids:
                         context["focus_ids"] = [focus_id for focus_id in context["focus_ids"] if focus_id != node_id]
-                        active_query = (context.get("active_query") or path.get("source_query") or current_query or "").strip()
+                        active_query = (path.get("source_query") or context.get("active_query") or current_query or "").strip()
                         if active_query:
                             context["base_subgraph"] = graph.context_subgraph(
                                 context["focus_ids"],
@@ -448,9 +474,13 @@ def register_callbacks(app: Dash) -> None:
         context["selected_node_id"] = node_id
         bridge_node = _node_from_context(path, context, node_id)
         bridge = resolve_litcoin_bridge(bridge_node, BridgeResolutionConfig())
+        selected_edge_ids = list(
+            ((context.get("robokop_state") or {}).get(node_id) or {}).get("selected_edge_ids") or []
+        )
         context.setdefault("robokop_state", {})[node_id] = {
             "bridge": bridge.to_dict(),
             "provider_mode": "not queried",
+            "selected_edge_ids": selected_edge_ids,
         }
         if not bridge.is_resolved:
             context_store = deepcopy(context_store or {})
@@ -480,7 +510,7 @@ def register_callbacks(app: Dash) -> None:
             "provider_base_url": getattr(provider, "base_url", None),
             "node": remote_node.to_dict() if remote_node else None,
             "summary": summary.to_dict(),
-            "selected_edge_ids": [],
+            "selected_edge_ids": selected_edge_ids,
         }
         context_store = deepcopy(context_store or {})
         context_store[selected_path_id] = context
@@ -504,7 +534,6 @@ def register_callbacks(app: Dash) -> None:
         State("context-store", "data"),
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
         State("query-input", "value"),
-        State("expansion-query-input", "value"),
         State("robokop-category-filter-dropdown", "value"),
         State("robokop-predicate-filter-dropdown", "value"),
         State("robokop-direction-dropdown", "value"),
@@ -521,7 +550,6 @@ def register_callbacks(app: Dash) -> None:
         context_store: dict[str, Any] | None,
         selected_node_data_values: list[list[dict[str, Any]] | None] | None,
         current_query: str | None,
-        expansion_query: str | None,
         robokop_category: str | None,
         robokop_predicate: str | None,
         robokop_direction: str | None,
@@ -552,9 +580,8 @@ def register_callbacks(app: Dash) -> None:
             return context_store, status(bridge.reason, "warning")
 
         active_query = (
-            expansion_query
+            path.get("source_query")
             or context.get("active_query")
-            or path.get("source_query")
             or current_query
             or ""
         ).strip()
@@ -656,8 +683,8 @@ def register_callbacks(app: Dash) -> None:
         context = context_store[selected_path_id]
         subgraph = visible_subgraph(path, context)
         context["positions"] = initial_positions(subgraph["nodes"], subgraph["edges"])
-        context["zoom"] = 1
-        context["pan"] = {"x": 0, "y": 0}
+        context.pop("zoom", None)
+        context.pop("pan", None)
         context["graph_revision"] = int(context.get("graph_revision", 0)) + 1
         context.pop("node_message", None)
         context.pop("node_message_node_id", None)
@@ -877,3 +904,22 @@ def _add_robokop_edge_to_context(context: dict[str, Any], node_id: str, edge: di
     }
     subgraph["nodes"] = list(nodes_by_id.values())
     subgraph["edges"] = list(edges_by_id.values())
+
+
+def _remove_robokop_edge_from_context(context: dict[str, Any], node_id: str, edge_id: str) -> None:
+    state = (context.get("robokop_state") or {}).get(node_id) or {}
+    state["selected_edge_ids"] = [selected_id for selected_id in state.get("selected_edge_ids", []) if selected_id != edge_id]
+
+    subgraphs = context.get("robokop_subgraphs") or {}
+    subgraph = subgraphs.get(node_id)
+    if not subgraph:
+        return
+    remaining_edges = [edge for edge in subgraph.get("edges", []) if edge["id"] != edge_id]
+    if not remaining_edges:
+        subgraphs.pop(node_id, None)
+        return
+    connected_ids = {node_id}
+    for edge in remaining_edges:
+        connected_ids.update((edge["source"], edge["target"]))
+    subgraph["edges"] = remaining_edges
+    subgraph["nodes"] = [node for node in subgraph.get("nodes", []) if node["id"] in connected_ids]
