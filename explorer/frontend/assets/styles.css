@@ -225,6 +225,42 @@ label {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.expansion-section {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.expansion-section h4 {
+  margin: 0;
+}
+
+.expansion-control-row.compact {
+  display: grid;
+  grid-template-columns: minmax(80px, 120px) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.expansion-filter-panel > summary {
+  cursor: pointer;
+  color: var(--green);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.expansion-filter-panel[open] > summary {
+  margin-bottom: 10px;
+}
+
+.expansion-controls.advanced {
+  display: grid;
+  gap: 12px;
+}
+
 .path-card {
   width: 100%;
   padding: 15px;

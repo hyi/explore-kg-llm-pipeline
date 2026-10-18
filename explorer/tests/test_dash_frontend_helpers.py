@@ -332,6 +332,12 @@ def test_node_action_panel_includes_ranked_expansion_controls() -> None:
 
     panel = node_action_panel(path, context, selected_node_id="n1")
     by_id = {component.id: component for component in _walk_components(panel) if getattr(component, "id", None)}
+    components = list(_walk_components(panel))
+    by_class = {
+        getattr(component, "className", ""): component
+        for component in components
+        if getattr(component, "className", "")
+    }
 
     assert "expansion-query-input" not in by_id
     assert by_id["expansion-limit-input"].value == 7
@@ -348,6 +354,17 @@ def test_node_action_panel_includes_ranked_expansion_controls() -> None:
         {"label": "biolink:affects_response_to", "value": "biolink:affects_response_to"},
         {"label": "biolink:associated_with", "value": "biolink:associated_with"},
     ]
+    assert by_id["expand-connected-button"].children == "Expand connected"
+    assert by_id["expand-similar-button"].children == "Expand semantically similar nodes"
+    assert by_class["expansion-section connected-expansion"].children[0].children == "Connected expansion"
+    assert by_class["expansion-section semantic-expansion"].children[0].children == "Semantic expansion"
+    filter_panel = by_class["expansion-filter-panel"]
+    assert filter_panel.open is False
+    assert filter_panel.children[0].children == "Advanced connected-neighbor filters"
+    assert any(
+        getattr(component, "children", None) == "Semantic expansion is independent of connected-neighbor filters."
+        for component in components
+    )
     assert by_id["robokop-summary-button"].children == "Fetch ROBOKOP summary"
     assert not any(
         str(getattr(component, "children", "")).startswith("Mode:")

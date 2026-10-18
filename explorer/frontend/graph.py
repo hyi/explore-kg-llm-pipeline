@@ -206,20 +206,9 @@ def node_action_panel(
     children.append(
         html.Div(
             [
+                html.H4("Connected expansion"),
                 html.Div(
                     [
-                        html.Label("Direction", htmlFor="expansion-direction-dropdown"),
-                        dcc.Dropdown(
-                            id="expansion-direction-dropdown",
-                            options=[
-                                {"label": "Either", "value": "either"},
-                                {"label": "Outgoing", "value": "outgoing"},
-                                {"label": "Incoming", "value": "incoming"},
-                            ],
-                            value=context.get("expansion_direction") or "either",
-                            clearable=False,
-                            className="expansion-select",
-                        ),
                         html.Label("Limit", htmlFor="expansion-limit-input"),
                         dcc.Input(
                             id="expansion-limit-input",
@@ -230,60 +219,106 @@ def node_action_panel(
                             value=int(context.get("connected_expansion_limit") or 12),
                             className="expansion-number",
                         ),
+                        html.Button(
+                            "Expand connected",
+                            id="expand-connected-button",
+                            n_clicks=0,
+                            className="secondary-button",
+                        ),
                     ],
-                    className="expansion-control-row",
+                    className="expansion-control-row compact",
                 ),
-                html.Div(
+                html.Details(
                     [
-                        html.Label("Neighbor categories", htmlFor="expansion-category-filter-dropdown"),
-                        dcc.Dropdown(
-                            id="expansion-category-filter-dropdown",
-                            options=_dropdown_options(filter_options.get("node_categories", [])),
-                            value=context.get("expansion_categories", []),
-                            multi=True,
-                            placeholder="Select one or more categories",
-                            className="expansion-select",
-                        ),
-                        html.Label("Predicates", htmlFor="expansion-predicate-filter-dropdown"),
-                        dcc.Dropdown(
-                            id="expansion-predicate-filter-dropdown",
-                            options=_dropdown_options(filter_options.get("predicates", [])),
-                            value=context.get("expansion_predicates", []),
-                            multi=True,
-                            placeholder="Select one or more predicates",
-                            className="expansion-select",
+                        html.Summary("Advanced connected-neighbor filters"),
+                        html.Div(
+                            [
+                                html.Div(
+                                    [
+                                        html.Label("Direction", htmlFor="expansion-direction-dropdown"),
+                                        dcc.Dropdown(
+                                            id="expansion-direction-dropdown",
+                                            options=[
+                                                {"label": "Either", "value": "either"},
+                                                {"label": "Outgoing", "value": "outgoing"},
+                                                {"label": "Incoming", "value": "incoming"},
+                                            ],
+                                            value=context.get("expansion_direction") or "either",
+                                            clearable=False,
+                                            className="expansion-select",
+                                        ),
+                                    ],
+                                    className="expansion-control-row",
+                                ),
+                                html.Div(
+                                    [
+                                        html.Label("Neighbor categories", htmlFor="expansion-category-filter-dropdown"),
+                                        dcc.Dropdown(
+                                            id="expansion-category-filter-dropdown",
+                                            options=_dropdown_options(filter_options.get("node_categories", [])),
+                                            value=context.get("expansion_categories", []),
+                                            multi=True,
+                                            placeholder="Select one or more categories",
+                                            className="expansion-select",
+                                        ),
+                                        html.Label("Predicates", htmlFor="expansion-predicate-filter-dropdown"),
+                                        dcc.Dropdown(
+                                            id="expansion-predicate-filter-dropdown",
+                                            options=_dropdown_options(filter_options.get("predicates", [])),
+                                            value=context.get("expansion_predicates", []),
+                                            multi=True,
+                                            placeholder="Select one or more predicates",
+                                            className="expansion-select",
+                                        ),
+                                    ],
+                                    className="expansion-control-row",
+                                ),
+                            ],
+                            className="expansion-controls advanced",
                         ),
                     ],
-                    className="expansion-control-row",
+                    className="expansion-filter-panel",
+                    open=False,
                 ),
             ],
-            className="expansion-controls",
+            className="expansion-section connected-expansion",
         )
     )
     children.append(
-            html.Div(
-                [
-                    html.Button(
-                        "Expand connected",
-                        id="expand-connected-button",
-                        n_clicks=0,
-                        className="secondary-button",
-                    ),
-                    html.Button(
-                        "Expand similar",
-                        id="expand-similar-button",
-                        n_clicks=0,
-                        className="secondary-button",
-                    ),
-                    html.Button(
-                        "Collapse expansions",
-                        id="collapse-node-button",
-                        n_clicks=0,
-                        className="secondary-button",
-                    ),
-                ],
-                className="button-row",
-            )
+        html.Div(
+            [
+                html.H4("Semantic expansion"),
+                html.Div(
+                    [
+                        html.Button(
+                            "Expand semantically similar nodes",
+                            id="expand-similar-button",
+                            n_clicks=0,
+                            className="secondary-button",
+                        ),
+                    ],
+                    className="button-row",
+                ),
+                html.Div(
+                    "Semantic expansion is independent of connected-neighbor filters.",
+                    className="hint",
+                ),
+            ],
+            className="expansion-section semantic-expansion",
+        )
+    )
+    children.append(
+        html.Div(
+            [
+                html.Button(
+                    "Collapse expansions",
+                    id="collapse-node-button",
+                    n_clicks=0,
+                    className="secondary-button",
+                ),
+            ],
+            className="button-row",
+        )
     )
     children.append(_robokop_controls(context, selected_node_id, node))
     return html.Div(
