@@ -238,11 +238,9 @@ label {
   margin: 0;
 }
 
-.expansion-control-row.compact {
-  display: grid;
-  grid-template-columns: minmax(80px, 120px) auto;
-  gap: 10px;
-  align-items: end;
+.expand-connection-button {
+  width: 100%;
+  white-space: nowrap;
 }
 
 .expansion-filter-panel > summary {
@@ -340,10 +338,8 @@ th {
 }
 
 .graph-toolbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 14px;
-  align-items: center;
+  display: grid;
+  gap: 8px;
   margin: 12px 0 14px;
 }
 
@@ -380,11 +376,6 @@ th {
   background: var(--ochre);
 }
 
-.legend-remote {
-  border-top-style: dotted;
-  border-top-color: #547aa5;
-}
-
 .legend-line {
   display: inline-block;
   width: 22px;
@@ -392,6 +383,10 @@ th {
   margin-right: 5px;
   border-top: 2px dashed #5577b8;
   vertical-align: 3px;
+}
+
+.legend-line.legend-remote {
+  border-top: 3px dotted #547aa5;
 }
 
 .graph-control-buttons {
@@ -514,6 +509,12 @@ th {
 .robokop-edge-title {
   font-size: 13px;
   font-weight: 900;
+  overflow-wrap: anywhere;
+}
+
+.robokop-bridge {
+  color: #b42318;
+  font-weight: 900;
 }
 
 .selected-node-copy {
@@ -574,7 +575,6 @@ th {
     overflow: visible;
   }
 
-  .graph-toolbar,
   .node-actions {
     align-items: flex-start;
     flex-direction: column;

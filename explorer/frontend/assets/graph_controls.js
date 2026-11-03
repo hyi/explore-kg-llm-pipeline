@@ -38,4 +38,16 @@
 
     return { ok: true, zoom: nextZoom, at: Date.now() };
   };
+
+  window.dash_clientside.kgExplorer.clearSelection = function (clicks) {
+    if (!clicks) {
+      return window.dash_clientside.no_update;
+    }
+    const cy = window.cy;
+    if (!cy || typeof cy.elements !== "function") {
+      return window.dash_clientside.no_update;
+    }
+    cy.elements(":selected").unselect();
+    return { ok: true, at: Date.now() };
+  };
 })();

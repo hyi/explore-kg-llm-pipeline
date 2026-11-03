@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path as FilePath
+
+import pytest
 
 from explorer.backend.external_graph import RobokopFixtureProvider
 from explorer.backend.models import Edge, Node, Path
@@ -20,7 +23,9 @@ from explorer.frontend.components import (
 from explorer.frontend.constants import CANDIDATE_PREVIEW_LIMIT
 from explorer.frontend.dash_app import create_app
 from explorer.frontend.graph import (
+    _robokop_edge_row,
     cytoscape_elements,
+    cytoscape_stylesheet,
     node_action_panel,
     positions_from_elements,
     truncate_label,
@@ -116,6 +121,52 @@ def test_cytoscape_labels_are_truncated_for_display() -> None:
     assert len(truncate_label(label)) == 30
 
 
+def test_context_graph_relationship_arrows_match_edge_colors() -> None:
+    styles = {entry["selector"]: entry["style"] for entry in cytoscape_stylesheet()}
+
+    assert styles["edge"]["target-arrow-shape"] == "triangle"
+    assert styles[".semantic-edge"]["target-arrow-shape"] == "none"
+    for selector in ("edge", ".path-edge", ".remote-edge"):
+        assert styles[selector]["target-arrow-color"] == styles[selector]["line-color"]
+
+
+def test_remote_legend_and_connection_button_styles() -> None:
+    stylesheet = (FilePath(__file__).parents[1] / "frontend" / "assets" / "styles.css").read_text()
+    remote_style = next(entry["style"] for entry in cytoscape_stylesheet() if entry["selector"] == ".remote-edge")
+    legend_rule = stylesheet.split(".legend-line.legend-remote {", 1)[1].split("}", 1)[0]
+    button_rule = stylesheet.split(".expand-connection-button {", 1)[1].split("}", 1)[0]
+
+    assert f"border-top: {remote_style['width']}px {remote_style['line-style']} {remote_style['line-color']};" in legend_rule
+    assert "width: 100%;" in button_rule
+    assert "white-space: nowrap;" in button_rule
+
+
+@pytest.mark.parametrize("bridge_curie", ["NCBIGene:5728", "DRUGBANK:DB00515", None, "NCBIGene:1"])
+def test_remote_edge_candidate_highlights_only_bridge_endpoint(bridge_curie: str | None) -> None:
+    row = _robokop_edge_row(
+        {
+            "edge_id": "robokop:e1",
+            "subject_curie": "NCBIGene:5728",
+            "object_curie": "DRUGBANK:DB00515",
+            "predicate": "biolink:affects",
+        },
+        selected=False,
+        bridge_curie=bridge_curie,
+    )
+    highlighted = [
+        component for component in _walk_components(row)
+        if getattr(component, "className", None) == "robokop-bridge"
+    ]
+
+    if bridge_curie in {"NCBIGene:5728", "DRUGBANK:DB00515"}:
+        assert len(highlighted) == 1
+        assert highlighted[0].children == bridge_curie
+        assert highlighted[0].title == "Bridge node"
+    else:
+        assert highlighted == []
+    assert row.children[0].children[1] == " -[affects]-> "
+
+
 def test_positions_and_selected_node_helpers() -> None:
     elements = [
         {"data": {"id": "n1"}, "position": {"x": 10, "y": 20}},
@@ -191,7 +242,10 @@ def test_graph_controls_render_above_graph() -> None:
 
     assert toolbar.className == "graph-toolbar"
     assert legend.className == "graph-legend"
-    assert button_ids == ["clear-selection-button", "reset-view-button", "zoom-in-button", "zoom-out-button"]
+    assert button_ids == [
+        "clear-selection-button", "collapse-node-button", "reset-view-button", "zoom-in-button", "zoom-out-button",
+    ]
+    assert toolbar.children[1].children[1].disabled is True
 
 
 def test_context_graph_disables_wheel_zoom() -> None:
@@ -230,6 +284,25 @@ def test_context_graph_disables_wheel_zoom() -> None:
     assert graph.zoomingEnabled is True
     assert graph.userPanningEnabled is True
     assert graph.zoom == 1.25
+
+
+def test_semantic_path_hits_label_targets_identified_slider_input() -> None:
+    components = {
+        component.id: component for component in _walk_components(build_layout())
+        if isinstance(getattr(component, "id", None), str)
+    }
+    label = components["path-hit-slider-label"]
+
+    assert label.children == "Semantic path hits"
+    assert getattr(label, "htmlFor", None) is None
+    assert components["path-hit-slider"].value == 5
+    response = create_app().server.test_client().get("/assets/form_accessibility.js")
+    assert response.status_code == 200
+    script = response.get_data(as_text=True)
+    assert 'input.id = "path-hit-slider-input"' in script
+    assert 'input.name = "semantic-path-hits"' in script
+    assert "label.htmlFor = input.id" in script
+    assert '"aria-labelledby", "path-hit-slider-label"' in script
 
 
 def test_initial_and_reset_view_fit_graph_with_padding() -> None:
@@ -354,18 +427,19 @@ def test_node_action_panel_includes_ranked_expansion_controls() -> None:
         {"label": "biolink:affects_response_to", "value": "biolink:affects_response_to"},
         {"label": "biolink:associated_with", "value": "biolink:associated_with"},
     ]
-    assert by_id["expand-connected-button"].children == "Expand connected"
+    assert by_id["expand-connected-button"].children == "Expand connection"
+    assert by_id["expand-connected-button"].className == "secondary-button expand-connection-button"
     assert by_id["expand-similar-button"].children == "Expand semantically similar nodes"
     assert by_class["expansion-section connected-expansion"].children[0].children == "Connected expansion"
     assert by_class["expansion-section semantic-expansion"].children[0].children == "Semantic expansion"
     filter_panel = by_class["expansion-filter-panel"]
     assert filter_panel.open is False
-    assert filter_panel.children[0].children == "Advanced connected-neighbor filters"
-    assert any(
-        getattr(component, "children", None) == "Semantic expansion is independent of connected-neighbor filters."
-        for component in components
-    )
-    assert by_id["robokop-summary-button"].children == "Fetch ROBOKOP summary"
+    assert filter_panel.children[0].children == "Connection filters"
+    assert by_id["expansion-limit-input"] in list(_walk_components(filter_panel))
+    assert by_id["expand-connected-button"] not in list(_walk_components(filter_panel))
+    assert "collapse-node-button" not in by_id
+    assert "robokop-summary-button" not in by_id
+    assert by_id["robokop-expand-button"].children == "Fetch ROBOKOP edges"
     assert not any(
         str(getattr(component, "children", "")).startswith("Mode:")
         for component in _walk_components(panel)
@@ -516,6 +590,17 @@ def test_node_action_panel_renders_robokop_summary_and_edges() -> None:
     assert by_id["robokop-direction-dropdown"].value == "outgoing"
     assert by_id["robokop-limit-input"].value == 3
     assert by_id["robokop-offset-input"].value == 2
+    filter_panel = next(
+        component for component in _walk_components(panel)
+        if getattr(component, "className", None) == "expansion-filter-panel robokop-filter-panel"
+    )
+    assert filter_panel.open is False
+    assert filter_panel.children[0].children == "ROBOKOP filters"
+    filter_ids = {component.id for component in _walk_components(filter_panel) if getattr(component, "id", None)}
+    assert filter_ids == {
+        "robokop-category-filter-dropdown", "robokop-predicate-filter-dropdown",
+        "robokop-direction-dropdown", "robokop-limit-input", "robokop-offset-input",
+    }
     assert by_id["robokop-expand-button"].children == "Fetch ROBOKOP edges"
     assert by_id["robokop-prev-page-button"].children == "Previous"
     assert by_id["robokop-next-page-button"].children == "Next"
@@ -542,13 +627,13 @@ def test_node_action_panel_renders_robokop_summary_and_edges() -> None:
     )
     pagination = controls.children[-1]
     assert fetch_index < results_index < len(controls.children) - 1
-    assert pagination.children == [
+    assert [pagination.children[0], pagination.children[2]] == [
         by_id["robokop-prev-page-button"], by_id["robokop-next-page-button"]
     ]
+    assert pagination.children[1].children == "Page 1"
     assert pagination.style == {}
     assert (
-        "ROBOKOP returned 1 edge(s); displaying 1 candidate card(s) at offset 2 with limit 3 "
-        "(category biolink:Drug; predicate biolink:affects; direction outgoing)."
+        "ROBOKOP reports 4 connections; fetched 1 candidate."
     ) in [
         getattr(component, "children", None) for component in _walk_components(panel)
     ]
@@ -571,6 +656,16 @@ def test_node_action_panel_renders_robokop_summary_and_edges() -> None:
     ]
     assert len(remote_results) == 1
     assert remote_results[0].open is True
+    candidate_bridge = next(
+        component for component in _walk_components(remote_results[0])
+        if getattr(component, "className", None) == "robokop-bridge"
+    )
+    assert candidate_bridge.children == "NCBIGene:5728"
+    metadata = next(
+        component for component in _walk_components(remote_results[0])
+        if getattr(component, "className", None) == "path-meta"
+    )
+    assert metadata.children == "infores:test | keyword match"
 
 
 def test_remote_edge_button_toggles_graph_edge() -> None:
@@ -644,14 +739,14 @@ def test_remote_edge_button_toggles_graph_edge() -> None:
     assert readded_context["path-1"]["robokop_state"]["n1"]["selected_edge_ids"] == ["robokop:e1"]
 
 
-def test_robokop_summary_refresh_keeps_added_edge_removable(monkeypatch) -> None:
+def test_robokop_combined_fetch_keeps_added_edge_removable(monkeypatch) -> None:
     monkeypatch.setattr(
         "explorer.frontend.callbacks.robokop_provider_from_env", RobokopFixtureProvider
     )
     app = create_app()
     callback_id = next(
         key for key, callback in app.callback_map.items()
-        if any(item["id"] == "robokop-summary-button" for item in callback["inputs"])
+        if any(item["id"] == "robokop-expand-button" for item in callback["inputs"])
     )
     path = {
         "id": "path-1",
@@ -674,14 +769,24 @@ def test_robokop_summary_refresh_keeps_added_edge_removable(monkeypatch) -> None
                 {"id": "context-store", "property": "data"},
                 {"id": "status-message", "property": "children"},
             ],
-            "inputs": [{"id": "robokop-summary-button", "property": "n_clicks", "value": 1}],
+            "inputs": [
+                {"id": "robokop-expand-button", "property": "n_clicks", "value": 1},
+                {"id": "robokop-prev-page-button", "property": "n_clicks", "value": None},
+                {"id": "robokop-next-page-button", "property": "n_clicks", "value": None},
+            ],
             "state": [
                 {"id": "selected-path-id-store", "property": "data", "value": "path-1"},
                 {"id": "candidate-paths-store", "property": "data", "value": [path]},
                 {"id": "context-store", "property": "data", "value": current_context},
                 [],
+                {"id": "query-input", "property": "value", "value": None},
+                {"id": "robokop-category-filter-dropdown", "property": "value", "value": None},
+                {"id": "robokop-predicate-filter-dropdown", "property": "value", "value": None},
+                {"id": "robokop-direction-dropdown", "property": "value", "value": "either"},
+                {"id": "robokop-limit-input", "property": "value", "value": 10},
+                {"id": "robokop-offset-input", "property": "value", "value": 0},
             ],
-            "changedPropIds": ["robokop-summary-button.n_clicks"],
+            "changedPropIds": ["robokop-expand-button.n_clicks"],
         },
     )
 
@@ -689,6 +794,8 @@ def test_robokop_summary_refresh_keeps_added_edge_removable(monkeypatch) -> None
     refreshed = response.get_json()["response"]["context-store"]["data"]["path-1"]
     assert refreshed["robokop_state"]["n1"]["selected_edge_ids"] == ["robokop:e1"]
     assert refreshed["robokop_subgraphs"] == current_context["path-1"]["robokop_subgraphs"]
+    assert refreshed["robokop_state"]["n1"]["summary"]["total_edges"] > 0
+    assert refreshed["robokop_state"]["n1"]["expansion"]["edges"]
 
 
 def test_robokop_page_uses_selected_path_query(monkeypatch) -> None:
@@ -783,14 +890,11 @@ def test_node_action_panel_shows_empty_robokop_summary() -> None:
     panel = node_action_panel(path, context, selected_node_id="n1")
     text = [getattr(component, "children", None) for component in _walk_components(panel)]
 
-    assert "Summary: 0 incident edges across 0 predicate/category groups." in text
-    assert "No ROBOKOP incident edges were reported for this bridge CURIE." in text
+    assert "No ROBOKOP connections found for this bridge." in text
     assert "Fixture data (not live)" not in text
     assert not any(isinstance(item, str) and item.startswith("Mode:") for item in text)
-    assert not any(
-        getattr(component, "id", None) == "robokop-prev-page-button"
-        for component in _walk_components(panel)
-    )
+    controls = next(component for component in _walk_components(panel) if getattr(component, "className", None) == "robokop-controls")
+    assert controls.children[-1].style == {"display": "none"}
 
 
 def test_node_action_panel_shows_empty_robokop_page() -> None:
@@ -833,17 +937,16 @@ def test_node_action_panel_shows_empty_robokop_page() -> None:
     text = [getattr(component, "children", None) for component in _walk_components(panel)]
 
     assert (
-        "ROBOKOP returned 3 of 3 edge(s); displaying 0 candidate card(s) at offset 0 with limit 3 "
-        "(category biolink:Drug; predicate biolink:affects; direction incoming). "
-        "3 edge(s) were hidden by the direction filter; set direction to Either to inspect them. "
-        "Try changing category, predicate, direction, or offset, then fetch again."
+        "ROBOKOP reports 4 connections; fetched 0 candidates. "
+        "3 connections excluded by direction; choose Either to include them. "
+        "No matching connections in this page. Change filters or try Next."
     ) in text
     controls = next(
         component for component in _walk_components(panel)
         if getattr(component, "className", None) == "robokop-controls"
     )
     assert controls.children[-1].style == {}
-    assert [button.children for button in controls.children[-1].children] == ["Previous", "Next"]
+    assert [button.children for button in controls.children[-1].children] == ["Previous", "Page 1", "Next"]
 
 
 def test_robokop_pagination_hidden_until_edges_are_fetched() -> None:
@@ -876,24 +979,49 @@ def test_robokop_pagination_hidden_until_edges_are_fetched() -> None:
 
     assert buttons["robokop-expand-button"].children == "Fetch ROBOKOP edges"
     assert controls.children[-1].style == {"display": "none"}
-    assert [button.children for button in controls.children[-1].children] == ["Previous", "Next"]
+    assert [button.children for button in controls.children[-1].children] == ["Previous", "Page 1", "Next"]
 
 
-def test_robokop_summary_callback_does_not_require_post_summary_controls() -> None:
+def test_robokop_combined_fetch_controls_exist_before_first_fetch() -> None:
     app = create_app()
-    summary_callbacks = [
+    fetch_callbacks = [
         metadata
         for metadata in app.callback_map.values()
-        if any(item["id"] == "robokop-summary-button" for item in metadata.get("inputs", []))
+        if any(item["id"] == "robokop-expand-button" for item in metadata.get("inputs", []))
     ]
 
-    assert len(summary_callbacks) == 1
-    state_ids = {item["id"] for item in summary_callbacks[0]["state"]}
-    assert "robokop-category-filter-dropdown" not in state_ids
-    assert "robokop-predicate-filter-dropdown" not in state_ids
-    assert "robokop-direction-dropdown" not in state_ids
-    assert "robokop-limit-input" not in state_ids
-    assert "robokop-offset-input" not in state_ids
+    assert len(fetch_callbacks) == 1
+    assert not any(
+        item["id"] == "robokop-summary-button"
+        for metadata in app.callback_map.values() for item in metadata.get("inputs", [])
+    )
+    panel = node_action_panel(
+        {"nodes": [{"element_id": "n1"}], "edges": []},
+        {"base_subgraph": {"nodes": [{"id": "n1"}], "edges": []}},
+        "n1",
+    )
+    component_ids = {component.id for component in _walk_components(panel) if getattr(component, "id", None)}
+    for item in fetch_callbacks[0]["state"]:
+        if isinstance(item["id"], str) and item["id"].startswith("robokop-"):
+            assert item["id"] in component_ids
+
+
+@pytest.mark.parametrize("score", [0, 0.42, None])
+def test_remote_candidate_hides_numeric_score_and_fallback_but_keeps_provenance(score) -> None:
+    edge = {
+        "edge_id": "robokop:e1",
+        "subject_curie": "NCBIGene:5728",
+        "object_curie": "DRUGBANK:DB00515",
+        "predicate": "biolink:affects",
+        "primary_knowledge_source": "infores:test",
+        "score": score,
+        "ranking_reasons": ["bounded ROBOKOP page fallback"],
+    }
+    row = _robokop_edge_row(edge, selected=False)
+
+    assert row.children[1].children == "infores:test"
+    assert edge["score"] == score
+    assert edge["ranking_reasons"] == ["bounded ROBOKOP page fallback"]
 
 
 def test_robokop_subgraph_is_merged_and_rendered_as_remote() -> None:

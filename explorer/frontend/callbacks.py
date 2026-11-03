@@ -20,6 +20,7 @@ from dash.exceptions import PreventUpdate
 from explorer.backend.external_graph import (
     BridgeResolutionConfig,
     ExternalExpansionConfig,
+    ExternalExpansionResult,
     RobokopProviderError,
     resolve_litcoin_bridge,
     robokop_provider_from_env,
@@ -64,6 +65,13 @@ def register_callbacks(app: Dash) -> None:
         Input("zoom-out-button", "n_clicks"),
         prevent_initial_call=True,
         )
+
+    app.clientside_callback(
+        ClientsideFunction(namespace="kgExplorer", function_name="clearSelection"),
+        Output("graph-selection-signal", "data"),
+        Input("clear-selection-button", "n_clicks"),
+        prevent_initial_call=True,
+    )
 
     @app.callback(
         Output("candidate-paths-store", "data"),
@@ -267,29 +275,47 @@ def register_callbacks(app: Dash) -> None:
     @app.callback(
         Output("context-store", "data", allow_duplicate=True),
         Input({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
+        Input({"type": "context-graph", "path_id": ALL, "revision": ALL}, "elements"),
         State("selected-path-id-store", "data"),
         State("context-store", "data"),
         prevent_initial_call=True,
     )
     def remember_selected_graph_node(
         selected_node_data_values: list[list[dict[str, Any]] | None] | None,
+        elements_values: list[list[dict[str, Any]] | None] | None,
         selected_path_id: str | None,
         context_store: dict[str, Any] | None,
     ) -> dict[str, Any]:
-        node_id = _active_selected_node_id(selected_node_data_values)
-        if not node_id or not selected_path_id or selected_path_id not in (context_store or {}):
+        if not selected_path_id or selected_path_id not in (context_store or {}):
+            raise PreventUpdate
+
+        context = context_store[selected_path_id]
+        triggered = ctx.triggered_id
+        if not isinstance(triggered, dict) or (
+            triggered.get("path_id") != selected_path_id
+            or triggered.get("revision") != context.get("graph_revision", 0)
+        ):
+            raise PreventUpdate
+        node_id = context.get("selected_node_id")
+        if any(item["prop_id"].endswith(".selectedNodeData") for item in ctx.triggered):
+            if not selected_node_data_values or all(value is None for value in selected_node_data_values):
+                raise PreventUpdate
+            node_id = _active_selected_node_id(selected_node_data_values)
+        positions = positions_from_elements(_active_elements(elements_values), context.get("positions", {}))
+        if node_id == context.get("selected_node_id") and positions == context.get("positions", {}):
             raise PreventUpdate
 
         context_store = deepcopy(context_store)
         context_store[selected_path_id]["selected_node_id"] = node_id
+        context_store[selected_path_id]["positions"] = positions
         return context_store
 
     @app.callback(
         Output("context-store", "data", allow_duplicate=True),
         Output("status-message", "children", allow_duplicate=True),
-        Input("expand-connected-button", "n_clicks"),
-        Input("expand-similar-button", "n_clicks"),
-        Input("collapse-node-button", "n_clicks"),
+        Input("expand-connected-button", "n_clicks", allow_optional=True),
+        Input("expand-similar-button", "n_clicks", allow_optional=True),
+        Input("collapse-node-button", "n_clicks", allow_optional=True),
         Input({"type": "toggle-robokop-edge", "edge_id": ALL}, "n_clicks"),
         State("selected-path-id-store", "data"),
         State("candidate-paths-store", "data"),
@@ -297,10 +323,10 @@ def register_callbacks(app: Dash) -> None:
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "elements"),
         State("query-input", "value"),
-        State("expansion-direction-dropdown", "value"),
-        State("expansion-limit-input", "value"),
-        State("expansion-category-filter-dropdown", "value"),
-        State("expansion-predicate-filter-dropdown", "value"),
+        State("expansion-direction-dropdown", "value", allow_optional=True),
+        State("expansion-limit-input", "value", allow_optional=True),
+        State("expansion-category-filter-dropdown", "value", allow_optional=True),
+        State("expansion-predicate-filter-dropdown", "value", allow_optional=True),
         prevent_initial_call=True,
     )
     def update_context_graph(
@@ -352,6 +378,14 @@ def register_callbacks(app: Dash) -> None:
             context_store[selected_path_id] = context
             return context_store, status(message, "success")
 
+        if action == "expand-similar-button" and node_id.startswith("robokop:"):
+            message = "Semantic expansion is available only for LitCoin nodes. Use ROBOKOP expansion for this node."
+            context["node_message"] = message
+            context["node_message_node_id"] = node_id
+            context_store = deepcopy(context_store or {})
+            context_store[selected_path_id] = context
+            return context_store, status(message, "warning")
+
         try:
             graph = Neo4jGraphAdapter()
             try:
@@ -397,14 +431,37 @@ def register_callbacks(app: Dash) -> None:
                     seed_new_positions(context, node_id)
                     message = f"Expanded top {limit} connected neighbors per focus node."
                 elif action == "expand-similar-button":
-                    context["semantic_subgraphs"][node_id] = graph.semantic_similar_nodes(node_id)
+                    semantic_subgraph = graph.semantic_similar_nodes(node_id)
+                    if not semantic_subgraph.get("edges"):
+                        message = (
+                            "No semantically similar nodes were returned. "
+                            "The selected node may lack an embedding in the active index."
+                        )
+                        context["node_message"] = message
+                        context["node_message_node_id"] = node_id
+                        context_store = deepcopy(context_store or {})
+                        context_store[selected_path_id] = context
+                        return context_store, status(message, "warning")
+                    visible = visible_subgraph(path, context)
+                    visible_node_ids = {node["id"] for node in visible["nodes"]}
+                    visible_edge_ids = {edge["id"] for edge in visible["edges"]}
+                    new_node_count = sum(node["id"] not in visible_node_ids for node in semantic_subgraph["nodes"])
+                    new_edge_count = sum(edge["id"] not in visible_edge_ids for edge in semantic_subgraph["edges"])
+                    context.setdefault("semantic_subgraphs", {})[node_id] = semantic_subgraph
                     if node_id not in context["focus_ids"]:
                         context["focus_ids"].append(node_id)
-                    context["hidden_ids"] = [hidden_id for hidden_id in context["hidden_ids"] if hidden_id != node_id]
-                    context.pop("node_message", None)
-                    context.pop("node_message_node_id", None)
+                    returned_node_ids = {node["id"] for node in semantic_subgraph["nodes"]}
+                    context["hidden_ids"] = [
+                        hidden_id for hidden_id in context["hidden_ids"] if hidden_id not in returned_node_ids
+                    ]
                     seed_new_positions(context, node_id)
-                    message = "Expanded semantically similar nodes."
+                    message = (
+                        f"Added {new_node_count} semantically similar node(s) and {new_edge_count} similarity link(s)."
+                        if new_node_count or new_edge_count
+                        else "No new semantically similar nodes to add; the returned matches are already visible."
+                    )
+                    context["node_message"] = message
+                    context["node_message_node_id"] = node_id
                 elif action == "collapse-node-button":
                     context["semantic_subgraphs"].pop(node_id, None)
                     context.get("robokop_subgraphs", {}).pop(node_id, None)
@@ -439,89 +496,17 @@ def register_callbacks(app: Dash) -> None:
             context_store[selected_path_id] = context
             return context_store, status(f"ROBOKOP expansion failed: {exc}", "error")
         except Exception as exc:  # noqa: BLE001 - graph adapter errors should become UI status.
+            if action == "expand-similar-button":
+                context["node_message"] = f"Semantic expansion failed: {exc}"
+                context["node_message_node_id"] = node_id
+                context_store = deepcopy(context_store or {})
+                context_store[selected_path_id] = context
+                return context_store, status(context["node_message"], "error")
             return no_update, status(f"Graph update failed: {exc}", "error")
 
         context_store = deepcopy(context_store or {})
         context_store[selected_path_id] = context
         return context_store, status(message, "success")
-
-    @app.callback(
-        Output("context-store", "data", allow_duplicate=True),
-        Output("status-message", "children", allow_duplicate=True),
-        Input("robokop-summary-button", "n_clicks"),
-        State("selected-path-id-store", "data"),
-        State("candidate-paths-store", "data"),
-        State("context-store", "data"),
-        State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
-        prevent_initial_call=True,
-    )
-    def fetch_robokop_summary(
-        n_clicks: int | None,
-        selected_path_id: str | None,
-        paths: list[dict[str, Any]] | None,
-        context_store: dict[str, Any] | None,
-        selected_node_data_values: list[list[dict[str, Any]] | None] | None,
-    ) -> tuple[dict[str, Any], Any]:
-        if not n_clicks or not selected_path_id:
-            raise PreventUpdate
-
-        path = find_path(paths or [], selected_path_id)
-        context = deepcopy((context_store or {}).get(selected_path_id))
-        node_id = _active_selected_node_id(selected_node_data_values) or (context or {}).get("selected_node_id")
-        if not path or not context or not node_id:
-            return no_update, status("Select a node before fetching a ROBOKOP summary.", "warning")
-
-        context["selected_node_id"] = node_id
-        bridge_node = _node_from_context(path, context, node_id)
-        bridge = resolve_litcoin_bridge(bridge_node, BridgeResolutionConfig())
-        selected_edge_ids = list(
-            ((context.get("robokop_state") or {}).get(node_id) or {}).get("selected_edge_ids") or []
-        )
-        context.setdefault("robokop_state", {})[node_id] = {
-            "bridge": bridge.to_dict(),
-            "provider_mode": "not queried",
-            "selected_edge_ids": selected_edge_ids,
-        }
-        if not bridge.is_resolved:
-            context_store = deepcopy(context_store or {})
-            context_store[selected_path_id] = context
-            return context_store, status(bridge.reason, "warning")
-
-        try:
-            provider = robokop_provider_from_env()
-            try:
-                remote_node = provider.lookup_node(bridge.curie)
-                summary = provider.edge_summary(bridge.curie)
-            finally:
-                close = getattr(provider, "close", None)
-                if callable(close):
-                    close()
-        except RobokopProviderError as exc:
-            state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
-            state["error"] = str(exc)
-            state.setdefault("provider_mode", "error")
-            context_store = deepcopy(context_store or {})
-            context_store[selected_path_id] = context
-            return context_store, status(f"ROBOKOP summary failed: {exc}", "error")
-
-        context["robokop_state"][node_id] = {
-            "bridge": bridge.to_dict(),
-            "provider_mode": summary.provider_mode,
-            "provider_base_url": getattr(provider, "base_url", None),
-            "node": remote_node.to_dict() if remote_node else None,
-            "summary": summary.to_dict(),
-            "selected_edge_ids": selected_edge_ids,
-        }
-        context_store = deepcopy(context_store or {})
-        context_store[selected_path_id] = context
-        return (
-            context_store,
-            status(
-                f"Fetched ROBOKOP {summary.provider_mode} summary for {bridge.curie}: "
-                f"{summary.total_edges} incident edges reported.",
-                "success",
-            ),
-        )
 
     @app.callback(
         Output("context-store", "data", allow_duplicate=True),
@@ -540,6 +525,7 @@ def register_callbacks(app: Dash) -> None:
         State("robokop-limit-input", "value"),
         State("robokop-offset-input", "value"),
         prevent_initial_call=True,
+        running=[(Output("robokop-expand-button", "disabled"), True, False)],
     )
     def fetch_robokop_page(
         n_clicks: int | None,
@@ -565,16 +551,16 @@ def register_callbacks(app: Dash) -> None:
         context = deepcopy((context_store or {}).get(selected_path_id))
         node_id = _active_selected_node_id(selected_node_data_values) or (context or {}).get("selected_node_id")
         if not path or not context or not node_id:
-            return no_update, status("Select a node before fetching a ROBOKOP page.", "warning")
+            return no_update, status("Select a node before fetching ROBOKOP edges.", "warning")
 
         context["selected_node_id"] = node_id
         bridge_node = _node_from_context(path, context, node_id)
         bridge = resolve_litcoin_bridge(bridge_node, BridgeResolutionConfig())
+        state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
+        state["bridge"] = bridge.to_dict()
+        state.setdefault("selected_edge_ids", [])
         if not bridge.is_resolved:
-            context.setdefault("robokop_state", {})[node_id] = {
-                "bridge": bridge.to_dict(),
-                "provider_mode": "not queried",
-            }
+            state.setdefault("provider_mode", "not queried")
             context_store = deepcopy(context_store or {})
             context_store[selected_path_id] = context
             return context_store, status(bridge.reason, "warning")
@@ -588,22 +574,37 @@ def register_callbacks(app: Dash) -> None:
         try:
             provider = robokop_provider_from_env()
             try:
+                if action == "robokop-expand-button" or not state.get("summary"):
+                    remote_node = provider.lookup_node(bridge.curie)
+                    summary = provider.edge_summary(bridge.curie)
+                    state["node"] = remote_node.to_dict() if remote_node else None
+                    state["summary"] = summary.to_dict()
+                    state["provider_mode"] = summary.provider_mode
                 limit = _bounded_robokop_limit(robokop_limit)
                 offset = _robokop_page_offset(
                     robokop_offset,
                     limit=limit,
                     action=str(action),
                 )
-                expansion = provider.incident_edges(
-                    bridge.curie,
-                    ExternalExpansionConfig(
-                        category=robokop_category or None,
-                        predicate=robokop_predicate or None,
-                        direction=robokop_direction or "either",
-                        limit=limit,
-                        offset=offset,
-                        query=active_query,
-                    ),
+                config = ExternalExpansionConfig(
+                    category=robokop_category or None,
+                    predicate=robokop_predicate or None,
+                    direction=robokop_direction or "either",
+                    limit=limit,
+                    offset=offset,
+                    query=active_query,
+                )
+                expansion = (
+                    provider.incident_edges(bridge.curie, config)
+                    if state["summary"].get("total_edges")
+                    else ExternalExpansionResult(
+                        query_curie=bridge.curie,
+                        edges=(),
+                        config=config,
+                        provider_mode=state["provider_mode"],
+                        total_returned=0,
+                        total_available=0,
+                    )
                 )
             finally:
                 close = getattr(provider, "close", None)
@@ -615,7 +616,7 @@ def register_callbacks(app: Dash) -> None:
             state.setdefault("provider_mode", "error")
             context_store = deepcopy(context_store or {})
             context_store[selected_path_id] = context
-            return context_store, status(f"ROBOKOP page fetch failed: {exc}", "error")
+            return context_store, status(f"ROBOKOP fetch failed: {exc}", "error")
 
         state = context.setdefault("robokop_state", {}).setdefault(node_id, {})
         state["bridge"] = bridge.to_dict()
@@ -629,8 +630,9 @@ def register_callbacks(app: Dash) -> None:
         return (
             context_store,
             status(
-                f"Fetched {expansion.total_returned} bounded ROBOKOP {expansion.provider_mode} "
-                f"edge(s) for {bridge.curie}.",
+                f"ROBOKOP reports {state['summary']['total_edges']} "
+                f"connection{'s' if state['summary']['total_edges'] != 1 else ''}; "
+                f"fetched {expansion.total_returned} candidate{'s' if expansion.total_returned != 1 else ''}.",
                 "success",
             ),
         )
@@ -696,7 +698,7 @@ def register_callbacks(app: Dash) -> None:
         Input({"type": "path-action", "action": ALL, "path_id": ALL}, "n_clicks"),
         State("candidate-paths-store", "data"),
         State("session-store", "data"),
-        State("path-note", "value"),
+        State("path-note", "value", allow_optional=True),
         prevent_initial_call=True,
     )
     def update_session(

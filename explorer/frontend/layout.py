@@ -16,6 +16,7 @@ def build_layout() -> html.Div:
             dcc.Store(id="selected-path-id-store", storage_type="memory"),
             dcc.Store(id="context-store", storage_type="memory", data={}),
             dcc.Store(id="graph-viewport-signal", storage_type="memory"),
+            dcc.Store(id="graph-selection-signal", storage_type="memory"),
             html.Header(
                 [
                     html.Div(
@@ -54,7 +55,10 @@ def build_layout() -> html.Div:
                                 [
                                     html.Div(
                                         [
-                                            html.Label("Semantic path hits"),
+                                            html.Label(
+                                                "Semantic path hits",
+                                                id="path-hit-slider-label",
+                                            ),
                                             dcc.Slider(
                                                 id="path-hit-slider",
                                                 min=1,

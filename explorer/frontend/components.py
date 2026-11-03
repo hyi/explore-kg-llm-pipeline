@@ -185,6 +185,14 @@ def render_path_details(
                                     className="secondary-button",
                                 ),
                                 html.Button(
+                                    "Collapse expansions",
+                                    id="collapse-node-button",
+                                    n_clicks=0,
+                                    disabled=not (context or {}).get("selected_node_id"),
+                                    title="Collapse expansions of the selected node",
+                                    className="secondary-button",
+                                ),
+                                html.Button(
                                     "Reset view",
                                     id="reset-view-button",
                                     n_clicks=0,
