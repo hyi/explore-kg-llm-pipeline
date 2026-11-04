@@ -52,19 +52,29 @@ subject, predicate, and object look similar — preserve source-specific evidenc
 
 ## Bounded Cross-Graph Interaction
 
-User-initiated, one-hop ROBOKOP expansion only. For a selected bridge entity: (1) fetch and display
-an edge summary first, (2) let the user choose or confirm category and predicate filters, (3) fetch
-a small page of incident edges, (4) rank the returned page against the selected path's source
-query, (5) let the user select which remote edges to add to or remove from the visible exploration.
+User-initiated, one-hop ROBOKOP expansion only. For a selected bridge entity: (1) attempt an edge
+summary once, (2) fetch one small page of incident edges per user action, (3) rank that page against
+the selected path's source query, (4) let the user choose which edges to add or remove. Never fetch
+all pages automatically or require a complete neighborhood download to display a page.
 
-The Node actions sidebar fetches ROBOKOP summaries before edge pages. Fetch ROBOKOP edges is
-separate from Previous and Next, which appear beneath the fetched page only after a page is
-available. Each candidate edge has an Add/Remove toggle; removing it prunes only its unshared
-remote context, preserving local LitCoin edges and other selected remote edges. Summary refreshes
-preserve selected remote-edge IDs. No separate expansion-query input is exposed.
+Page size is the only ROBOKOP input, placed beside Fetch ROBOKOP edges (default 10, maximum 25).
+Do not expose category, predicate, direction, or offset filters in this sidebar; the provider
+boundary still supports them for programmatic use. Fetch starts at the first page; Previous and
+Next use the offset stored with the displayed page. Changing page size restarts pagination.
+
+Fetch attempts the summary before the first edge page and caches it per selected node in the
+path context. Re-fetching or paging does not request it again. The live summary request uses a
+three-second timeout, or the configured edge timeout if shorter. A summary failure is recorded,
+does not trigger automatic retries, and does not prevent edge browsing. Show the total connection
+count when available, without implying that only the fetched page is the full neighborhood.
+
+Previous and Next appear beneath a fetched page; Next becomes disabled at the known end or after
+a short page when no total is available. Each candidate has an Add/Remove toggle; removing it
+prunes only its unshared remote context, preserving LitCoin edges and other selected remote edges.
+Paging and summary retrieval preserve selected edges. No expansion-query input is exposed.
 
 ROBOKOP has no stored embeddings available through RoboMCP — ranking starts with keyword relevance,
-query-intent compatibility, and explicit type/predicate filters. On-demand embedding reranking of a
+query-intent compatibility. Programmatic callers can also use type/predicate filters. On-demand embedding reranking of a
 small fetched candidate set is future work; it must be cached, bounded, labeled, and evaluated
 against the simpler lexical baseline before being added.
 
@@ -99,6 +109,8 @@ fixtures that preserve realistic response structure and provenance. Required:
   source
 * duplicate-looking LitCoin and ROBOKOP edges retain separate provenance
 * high-degree expansion is bounded and paginated
+* the sidebar exposes only page size, and a cached summary is not re-fetched during pagination
+* summary timeouts are bounded and do not prevent fetching an edge page
 * timeout, malformed response, and unavailable-provider states are visible and leave the LitCoin
   session intact
 * fixture mode and live mode cannot be confused in the UI

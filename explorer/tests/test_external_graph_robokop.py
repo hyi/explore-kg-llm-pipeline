@@ -23,6 +23,17 @@ from explorer.frontend.callbacks import (
 from explorer.frontend.graph import visible_subgraph
 
 
+@pytest.mark.parametrize(("configured_timeout", "expected_timeout"), [(20.0, 3.0), (1.0, 1.0)])
+def test_summary_timeout_is_capped_without_increasing_a_shorter_timeout(configured_timeout, expected_timeout) -> None:
+    def respond(request):
+        assert request.extensions["timeout"]["read"] == expected_timeout
+        return httpx.Response(200, json={"edge_types": []})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        provider = RobokopHttpProvider(RobokopHttpConfig(timeout_seconds=configured_timeout), client=client)
+        assert provider.edge_summary("MONDO:0008903").total_edges == 0
+
+
 def test_normalized_identifier_maps_litcoin_node_to_robokop_lookup() -> None:
     resolution = resolve_litcoin_bridge({"id": "cyto-1", "curie": "NCBIGene:5728", "label": "PTEN"})
 
@@ -299,11 +310,11 @@ class FakeHttpClient:
         self.payloads = payloads
         self.requests: list[tuple[str, dict | None]] = []
 
-    def get(self, url: str, params: dict | None = None) -> FakeResponse:
+    def get(self, url: str, params: dict | None = None, *, timeout: float | None = None) -> FakeResponse:
         self.requests.append((url, params))
         return FakeResponse(self.payloads[url])
 
 
 class TimeoutClient:
-    def get(self, _url: str, params: dict | None = None) -> FakeResponse:
+    def get(self, _url: str, params: dict | None = None, *, timeout: float | None = None) -> FakeResponse:
         raise httpx.TimeoutException("timeout")

@@ -3,18 +3,23 @@ from __future__ import annotations
 import json
 from copy import deepcopy
 
+import httpx
 import pytest
 
 from explorer.backend.external_graph import (
-    EdgeSummary,
     RobokopFixtureProvider,
+    RobokopHttpConfig,
+    RobokopHttpProvider,
     RobokopProviderError,
+    RobokopProviderTimeout,
 )
 from explorer.frontend.components import render_path_details
 from explorer.frontend.dash_app import create_app
 from explorer.frontend.graph import (
     cytoscape_elements,
     node_action_panel,
+    robokop_has_next_page,
+    robokop_page_message,
     seed_new_positions,
 )
 
@@ -141,9 +146,11 @@ def _expand_semantically(app, path: dict, context: dict):
     )
 
 
-def _fetch_remote(app, path: dict, context: dict, *, action="robokop-expand-button", offset=0):
+def _fetch_remote(
+    app, path: dict, context: dict, *, action="robokop-expand-button", curie="NCBIGene:5728", limit=2
+):
     path = deepcopy(path)
-    path["nodes"][0]["id"] = "NCBIGene:5728"
+    path["nodes"][0]["id"] = curie
     callback_id = next(
         key for key, metadata in app.callback_map.items()
         if any(item["id"] == "robokop-expand-button" for item in metadata["inputs"])
@@ -166,28 +173,26 @@ def _fetch_remote(app, path: dict, context: dict, *, action="robokop-expand-butt
                 {"id": "context-store", "property": "data", "value": context},
                 [],
                 {"id": "query-input", "property": "value", "value": "cancer drug response"},
-                {"id": "robokop-category-filter-dropdown", "property": "value", "value": None},
-                {"id": "robokop-predicate-filter-dropdown", "property": "value", "value": None},
-                {"id": "robokop-direction-dropdown", "property": "value", "value": "either"},
-                {"id": "robokop-limit-input", "property": "value", "value": 2},
-                {"id": "robokop-offset-input", "property": "value", "value": offset},
+                {"id": "robokop-limit-input", "property": "value", "value": limit},
             ],
             "changedPropIds": [f"{action}.n_clicks"],
         },
     )
 
 
-def test_combined_remote_fetch_loads_summary_before_edges_and_reuses_it_for_paging(
+def test_remote_fetch_requests_summary_once_and_one_page_per_click(
     remote_provider, graph_context, path
 ) -> None:
     app = create_app()
     response = _fetch_remote(app, path, graph_context)
 
     assert response.status_code == 200
-    assert remote_provider.calls == ["node", "summary", "edges", "close"]
+    assert remote_provider.calls == ["summary", "edges", "close"]
     fetched = response.get_json()["response"]["context-store"]["data"]
     state = fetched["path-1"]["robokop_state"]["n1"]
     assert state["summary"]["total_edges"] > 0
+    assert state["summary"]["categories"]
+    assert state["summary"]["predicates"]
     assert len(state["expansion"]["edges"]) == 2
     assert state["expansion"]["config"]["offset"] == 0
 
@@ -200,34 +205,65 @@ def test_combined_remote_fetch_loads_summary_before_edges_and_reuses_it_for_pagi
     assert paged["path-1"]["robokop_state"]["n1"]["expansion"]["config"]["offset"] == 2
 
     remote_provider.calls.clear()
-    response = _fetch_remote(app, path, paged, offset=2)
+    response = _fetch_remote(app, path, paged)
     assert response.status_code == 200
-    assert remote_provider.calls == ["node", "summary", "edges", "close"]
+    assert remote_provider.calls == ["edges", "close"]
+    assert response.get_json()["response"]["context-store"]["data"]["path-1"]["robokop_state"]["n1"]["expansion"]["config"]["offset"] == 0
 
 
-def test_zero_connection_summary_skips_remote_edge_request(remote_provider, graph_context, path, monkeypatch) -> None:
-    monkeypatch.setattr(
-        remote_provider, "edge_summary",
-        lambda curie: EdgeSummary(query_curie=curie, items=(), provider_mode="fixture"),
-    )
+def test_cached_summary_does_not_require_another_summary_request(remote_provider, graph_context, path) -> None:
+    graph_context["path-1"]["robokop_state"] = {"n1": {"summary": {"total_edges": 10000}}}
     response = _fetch_remote(create_app(), path, graph_context)
 
     assert response.status_code == 200
-    assert remote_provider.calls == ["node", "close"]
+    assert remote_provider.calls == ["edges", "close"]
     state = response.get_json()["response"]["context-store"]["data"]["path-1"]["robokop_state"]["n1"]
-    assert state["summary"]["total_edges"] == 0
-    assert state["expansion"]["edges"] == []
+    assert state["summary"]["total_edges"] == 10000
+    assert len(state["expansion"]["edges"]) == 2
     assert state["provider_mode"] == "fixture"
 
 
-@pytest.mark.parametrize("failed_stage", ["edge_summary", "incident_edges"])
+def test_summary_timeout_does_not_block_pages_or_repeat_summary(remote_provider, graph_context, path, monkeypatch):
+    def fail_summary(curie):
+        remote_provider.calls.append("summary")
+        raise RobokopProviderTimeout("Summary timed out")
+
+    monkeypatch.setattr(remote_provider, "edge_summary", fail_summary)
+    app = create_app()
+    response = _fetch_remote(app, path, graph_context)
+    assert response.status_code == 200
+    fetched = response.get_json()["response"]["context-store"]["data"]
+    state = fetched["path-1"]["robokop_state"]["n1"]
+    assert state["summary_requested"] is True
+    assert state["summary_error"] == "Summary timed out"
+    assert len(state["expansion"]["edges"]) == 2
+
+    response = _fetch_remote(app, path, fetched, action="robokop-next-page-button")
+    assert response.status_code == 200
+    assert remote_provider.calls == ["summary", "edges", "close", "edges", "close"]
+
+
+def test_changing_robokop_page_size_restarts_at_first_page(remote_provider, graph_context, path):
+    app = create_app()
+    response = _fetch_remote(app, path, graph_context)
+    fetched = response.get_json()["response"]["context-store"]["data"]
+    response = _fetch_remote(app, path, fetched, action="robokop-next-page-button")
+    paged = response.get_json()["response"]["context-store"]["data"]
+    response = _fetch_remote(app, path, paged, action="robokop-next-page-button", limit=5)
+    assert response.status_code == 200
+    config = response.get_json()["response"]["context-store"]["data"]["path-1"]["robokop_state"]["n1"]["expansion"]["config"]
+    assert config["offset"] == 0
+    assert config["limit"] == 5
+    assert remote_provider.calls.count("summary") == 1
+
+
 def test_combined_remote_fetch_failure_preserves_added_edges(
-    remote_provider, graph_context, path, monkeypatch, failed_stage
+    remote_provider, graph_context, path, monkeypatch
 ) -> None:
     def fail(*args):
         raise RobokopProviderError("Remote service unavailable")
 
-    monkeypatch.setattr(remote_provider, failed_stage, fail)
+    monkeypatch.setattr(remote_provider, "incident_edges", fail)
     graph_context["path-1"]["robokop_state"] = {"n1": {"selected_edge_ids": ["robokop:e1"]}}
     graph_context["path-1"]["robokop_subgraphs"] = {
         "n1": {"nodes": [{"id": "remote:1"}], "edges": [{"id": "robokop:e1"}]},
@@ -241,9 +277,87 @@ def test_combined_remote_fetch_failure_preserves_added_edges(
     assert context["robokop_state"]["n1"]["selected_edge_ids"] == ["robokop:e1"]
     assert context["robokop_state"]["n1"]["error"] == "Remote service unavailable"
     assert remote_provider.calls[-1] == "close"
-    if failed_stage == "incident_edges":
-        assert context["robokop_state"]["n1"]["summary"]["total_edges"] > 0
     assert "error" in result["status-message"]["children"]["props"]["className"]
+
+
+def test_high_degree_robokop_fetch_requests_summary_once_and_one_page_per_click(monkeypatch, graph_context, path) -> None:
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        if request.url.path == "/edge_summary/MONDO:0008903":
+            return httpx.Response(200, json={"edge_types": [
+                {"predicate": "biolink:affects", "category": "biolink:Gene", "count": 10000},
+            ]})
+        assert request.url.path == "/edges/MONDO:0008903"
+        assert dict(request.url.params) == {"limit": "2", "offset": str((len(requests) - 2) * 2)}
+        offset = int(request.url.params["offset"])
+        category = "biolink:Gene" if offset == 0 else "biolink:Drug"
+        predicate = "biolink:affects" if offset == 0 else "biolink:treats"
+        return httpx.Response(
+            200,
+            json={
+                "query_curie": "MONDO:0008903",
+                "edges": [
+                    {
+                        "edge": {"predicate": predicate, "direction": ">", "properties": {}},
+                        "adj_node": {"id": f"NCBIGene:{index}", "name": f"Neighbor {index}", "category": [category]},
+                    }
+                    for index in range(offset, offset + 2)
+                ],
+                "pagination": {"total": 10000, "count": 2, "limit": 2, "offset": offset},
+            },
+        )
+
+    monkeypatch.setattr(
+        "explorer.frontend.callbacks.robokop_provider_from_env",
+        lambda: RobokopHttpProvider(
+            RobokopHttpConfig(base_url="https://example.test"),
+            client=httpx.Client(transport=httpx.MockTransport(respond)),
+        ),
+    )
+    app = create_app()
+    response = _fetch_remote(app, path, graph_context, curie="MONDO:0008903")
+    assert response.status_code == 200
+    assert len(requests) == 2
+    assert requests[0].url.path == "/edge_summary/MONDO:0008903"
+    assert requests[0].extensions["timeout"]["read"] == 3.0
+    fetched = response.get_json()["response"]["context-store"]["data"]
+    state = fetched["path-1"]["robokop_state"]["n1"]
+    assert len(state["expansion"]["edges"]) == 2
+    assert state["expansion"]["total_available"] == 10000
+    assert robokop_has_next_page(state["expansion"])
+    assert "ROBOKOP reports 10000 connections" in robokop_page_message(state["expansion"], summary=state["summary"])
+
+    response = _fetch_remote(app, path, fetched, action="robokop-next-page-button", curie="MONDO:0008903")
+    assert response.status_code == 200
+    assert len(requests) == 3
+    state = response.get_json()["response"]["context-store"]["data"]["path-1"]["robokop_state"]["n1"]
+    assert len(state["expansion"]["edges"]) == 2
+    assert state["expansion"]["config"]["offset"] == 2
+    assert state["summary"]["total_edges"] == 10000
+    assert state["expansion"]["config"]["category"] is None
+    assert state["expansion"]["config"]["predicate"] is None
+    assert state["expansion"]["config"]["direction"] == "either"
+
+
+@pytest.mark.parametrize(
+    ("page_count", "offset", "total_available", "expected"),
+    [(10, 0, None, True), (3, 0, None, False), (0, 10, None, False), (10, 0, 10, False), (10, 0, 10000, True)],
+)
+def test_robokop_next_page_uses_unfiltered_page_size(page_count, offset, total_available, expected) -> None:
+    expansion = {
+        "config": {"limit": 10, "offset": offset},
+        "edges": [],
+        "total_available": total_available,
+        "diagnostics": {"page_count": page_count, "direction_filtered_count": page_count},
+    }
+
+    assert robokop_has_next_page(expansion) is expected
+    if expected:
+        assert "Try Next" in robokop_page_message(expansion)
+    else:
+        assert "Try Next" not in robokop_page_message(expansion)
 
 
 def test_semantic_expansion_notifies_when_no_results(monkeypatch, graph_context, path) -> None:

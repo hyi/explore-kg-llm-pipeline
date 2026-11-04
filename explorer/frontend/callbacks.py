@@ -20,7 +20,6 @@ from dash.exceptions import PreventUpdate
 from explorer.backend.external_graph import (
     BridgeResolutionConfig,
     ExternalExpansionConfig,
-    ExternalExpansionResult,
     RobokopProviderError,
     resolve_litcoin_bridge,
     robokop_provider_from_env,
@@ -43,6 +42,7 @@ from explorer.frontend.graph import (
     initial_positions,
     node_action_panel,
     positions_from_elements,
+    robokop_page_message,
     seed_new_positions,
     visible_subgraph,
 )
@@ -519,11 +519,7 @@ def register_callbacks(app: Dash) -> None:
         State("context-store", "data"),
         State({"type": "context-graph", "path_id": ALL, "revision": ALL}, "selectedNodeData"),
         State("query-input", "value"),
-        State("robokop-category-filter-dropdown", "value"),
-        State("robokop-predicate-filter-dropdown", "value"),
-        State("robokop-direction-dropdown", "value"),
         State("robokop-limit-input", "value"),
-        State("robokop-offset-input", "value"),
         prevent_initial_call=True,
         running=[(Output("robokop-expand-button", "disabled"), True, False)],
     )
@@ -536,11 +532,7 @@ def register_callbacks(app: Dash) -> None:
         context_store: dict[str, Any] | None,
         selected_node_data_values: list[list[dict[str, Any]] | None] | None,
         current_query: str | None,
-        robokop_category: str | None,
-        robokop_predicate: str | None,
-        robokop_direction: str | None,
         robokop_limit: float | str | None,
-        robokop_offset: float | str | None,
     ) -> tuple[dict[str, Any], Any]:
         action = ctx.triggered_id
         clicked = ctx.triggered[0]["value"] if ctx.triggered else None
@@ -574,38 +566,24 @@ def register_callbacks(app: Dash) -> None:
         try:
             provider = robokop_provider_from_env()
             try:
-                if action == "robokop-expand-button" or not state.get("summary"):
-                    remote_node = provider.lookup_node(bridge.curie)
-                    summary = provider.edge_summary(bridge.curie)
-                    state["node"] = remote_node.to_dict() if remote_node else None
-                    state["summary"] = summary.to_dict()
-                    state["provider_mode"] = summary.provider_mode
+                if not state.get("summary_requested") and "total_edges" not in (state.get("summary") or {}):
+                    state["summary_requested"] = True
+                    try:
+                        state["summary"] = provider.edge_summary(bridge.curie).to_dict()
+                        state.pop("summary_error", None)
+                    except RobokopProviderError as exc:
+                        state["summary_error"] = str(exc)
                 limit = _bounded_robokop_limit(robokop_limit)
-                offset = _robokop_page_offset(
-                    robokop_offset,
-                    limit=limit,
-                    action=str(action),
-                )
+                previous_config = (state.get("expansion") or {}).get("config") or {}
+                offset = 0
+                if action != "robokop-expand-button" and limit == previous_config.get("limit"):
+                    offset = _robokop_page_offset(previous_config.get("offset"), limit=limit, action=str(action))
                 config = ExternalExpansionConfig(
-                    category=robokop_category or None,
-                    predicate=robokop_predicate or None,
-                    direction=robokop_direction or "either",
                     limit=limit,
                     offset=offset,
                     query=active_query,
                 )
-                expansion = (
-                    provider.incident_edges(bridge.curie, config)
-                    if state["summary"].get("total_edges")
-                    else ExternalExpansionResult(
-                        query_curie=bridge.curie,
-                        edges=(),
-                        config=config,
-                        provider_mode=state["provider_mode"],
-                        total_returned=0,
-                        total_available=0,
-                    )
-                )
+                expansion = provider.incident_edges(bridge.curie, config)
             finally:
                 close = getattr(provider, "close", None)
                 if callable(close):
@@ -630,9 +608,7 @@ def register_callbacks(app: Dash) -> None:
         return (
             context_store,
             status(
-                f"ROBOKOP reports {state['summary']['total_edges']} "
-                f"connection{'s' if state['summary']['total_edges'] != 1 else ''}; "
-                f"fetched {expansion.total_returned} candidate{'s' if expansion.total_returned != 1 else ''}.",
+                robokop_page_message(state["expansion"], summary=state.get("summary")),
                 "success",
             ),
         )

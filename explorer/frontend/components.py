@@ -26,7 +26,7 @@ def render_candidate_path_cards(
         return html.Div("No paths to display yet.", className="empty")
 
     indexed_paths = list(enumerate(paths, start=1))
-    if len(indexed_paths) > CANDIDATE_PREVIEW_LIMIT:
+    if not expanded and len(indexed_paths) > CANDIDATE_PREVIEW_LIMIT:
         preview = indexed_paths[:CANDIDATE_PREVIEW_LIMIT]
         if selected_path_id not in {path["id"] for _, path in preview}:
             selected = next(
@@ -35,11 +35,7 @@ def render_candidate_path_cards(
             )
             if selected:
                 preview[-1] = selected
-        if expanded:
-            preview_ids = {path["id"] for _, path in preview}
-            indexed_paths = preview + [item for item in indexed_paths if item[1]["id"] not in preview_ids]
-        else:
-            indexed_paths = preview
+        indexed_paths = preview
 
     cards = []
     for index, path in indexed_paths:

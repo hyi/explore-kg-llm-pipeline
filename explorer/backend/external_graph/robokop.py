@@ -33,6 +33,7 @@ DEFAULT_FIXTURE_PATH = Path(__file__).parent / "fixtures" / "robokop_pten.json"
 ROBOKOP_RANKING_STRATEGY = "bounded_robokop_keyword_intent_v1"
 REMOTE_TOKEN_MATCH_WEIGHT = 0.05
 REMOTE_MAX_TOKEN_SCORE = 0.25
+ROBOKOP_SUMMARY_TIMEOUT_SECONDS = 3.0
 
 
 class ExternalGraphProvider(Protocol):
@@ -98,7 +99,10 @@ class RobokopHttpProvider:
         return _node_from_payload(payload)
 
     def edge_summary(self, curie: str) -> EdgeSummary:
-        payload = self._get_json(f"/edge_summary/{curie}")
+        payload = self._get_json(
+            f"/edge_summary/{curie}",
+            timeout_seconds=min(self.config.timeout_seconds, ROBOKOP_SUMMARY_TIMEOUT_SECONDS),
+        )
         if not isinstance(payload, dict):
             raise RobokopMalformedResponse("ROBOKOP edge summary response must be an object.")
         edge_types = payload.get("edge_types")
@@ -146,9 +150,12 @@ class RobokopHttpProvider:
         )
         return rank_external_edges(result, query=config.query)
 
-    def _get_json(self, path: str, params: dict[str, Any] | None = None) -> Any:
+    def _get_json(
+        self, path: str, params: dict[str, Any] | None = None, *, timeout_seconds: float | None = None
+    ) -> Any:
         try:
-            response = self._client.get(f"{self.base_url}{path}", params=params)
+            request_options = {"timeout": timeout_seconds} if timeout_seconds is not None else {}
+            response = self._client.get(f"{self.base_url}{path}", params=params, **request_options)
             response.raise_for_status()
             return response.json()
         except httpx.TimeoutException as exc:

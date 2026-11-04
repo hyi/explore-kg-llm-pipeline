@@ -458,6 +458,21 @@ th {
   padding-top: 12px;
 }
 
+.robokop-page-controls {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  align-items: end;
+  gap: 8px;
+}
+
+.robokop-page-size label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .robokop-meta-row {
   display: flex;
   flex-wrap: wrap;

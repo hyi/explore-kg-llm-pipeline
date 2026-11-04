@@ -581,26 +581,17 @@ def test_node_action_panel_renders_robokop_summary_and_edges() -> None:
     panel = node_action_panel(path, context, selected_node_id="n1")
     by_id = {str(component.id): component for component in _walk_components(panel) if getattr(component, "id", None)}
 
-    assert by_id["robokop-category-filter-dropdown"].options == [
-        {"label": "biolink:Drug", "value": "biolink:Drug"}
-    ]
-    assert by_id["robokop-predicate-filter-dropdown"].options == [
-        {"label": "biolink:affects", "value": "biolink:affects"}
-    ]
-    assert by_id["robokop-direction-dropdown"].value == "outgoing"
     assert by_id["robokop-limit-input"].value == 3
-    assert by_id["robokop-offset-input"].value == 2
-    filter_panel = next(
+    page_controls = next(
         component for component in _walk_components(panel)
-        if getattr(component, "className", None) == "expansion-filter-panel robokop-filter-panel"
+        if getattr(component, "className", None) == "robokop-page-controls"
     )
-    assert filter_panel.open is False
-    assert filter_panel.children[0].children == "ROBOKOP filters"
-    filter_ids = {component.id for component in _walk_components(filter_panel) if getattr(component, "id", None)}
-    assert filter_ids == {
+    control_ids = {component.id for component in _walk_components(page_controls) if getattr(component, "id", None)}
+    assert control_ids == {"robokop-limit-input", "robokop-expand-button"}
+    assert not any(identifier in by_id for identifier in (
         "robokop-category-filter-dropdown", "robokop-predicate-filter-dropdown",
-        "robokop-direction-dropdown", "robokop-limit-input", "robokop-offset-input",
-    }
+        "robokop-direction-dropdown", "robokop-offset-input",
+    ))
     assert by_id["robokop-expand-button"].children == "Fetch ROBOKOP edges"
     assert by_id["robokop-prev-page-button"].children == "Previous"
     assert by_id["robokop-next-page-button"].children == "Next"
@@ -618,7 +609,7 @@ def test_node_action_panel_renders_robokop_summary_and_edges() -> None:
     )
     fetch_index = next(
         index for index, child in enumerate(controls.children)
-        if getattr(child, "className", None) == "button-row"
+        if getattr(child, "className", None) == "robokop-page-controls"
         and by_id["robokop-expand-button"] in child.children
     )
     results_index = next(
@@ -780,11 +771,7 @@ def test_robokop_combined_fetch_keeps_added_edge_removable(monkeypatch) -> None:
                 {"id": "context-store", "property": "data", "value": current_context},
                 [],
                 {"id": "query-input", "property": "value", "value": None},
-                {"id": "robokop-category-filter-dropdown", "property": "value", "value": None},
-                {"id": "robokop-predicate-filter-dropdown", "property": "value", "value": None},
-                {"id": "robokop-direction-dropdown", "property": "value", "value": "either"},
                 {"id": "robokop-limit-input", "property": "value", "value": 10},
-                {"id": "robokop-offset-input", "property": "value", "value": 0},
             ],
             "changedPropIds": ["robokop-expand-button.n_clicks"],
         },
@@ -847,11 +834,7 @@ def test_robokop_page_uses_selected_path_query(monkeypatch) -> None:
                 {"id": "context-store", "property": "data", "value": context},
                 [],
                 {"id": "query-input", "property": "value", "value": "other current query"},
-                {"id": "robokop-category-filter-dropdown", "property": "value", "value": None},
-                {"id": "robokop-predicate-filter-dropdown", "property": "value", "value": None},
-                {"id": "robokop-direction-dropdown", "property": "value", "value": "either"},
                 {"id": "robokop-limit-input", "property": "value", "value": 5},
-                {"id": "robokop-offset-input", "property": "value", "value": 0},
             ],
             "changedPropIds": ["robokop-expand-button.n_clicks"],
         },
@@ -938,8 +921,8 @@ def test_node_action_panel_shows_empty_robokop_page() -> None:
 
     assert (
         "ROBOKOP reports 4 connections; fetched 0 candidates. "
-        "3 connections excluded by direction; choose Either to include them. "
-        "No matching connections in this page. Change filters or try Next."
+        "3 connections excluded by direction. "
+        "No connections in this page."
     ) in text
     controls = next(
         component for component in _walk_components(panel)
@@ -1115,16 +1098,28 @@ def test_candidate_preview_keeps_selected_path_visible() -> None:
     assert [card.id["path_id"] for card in preview] == preview_ids
     assert preview[-1].children[0].children[0].children == "Path 7"
     assert preview[-1].className.endswith("selected")
-    assert [card.id["path_id"] for card in expanded[:CANDIDATE_PREVIEW_LIMIT]] == preview_ids
+    assert [card.id["path_id"] for card in expanded[:CANDIDATE_PREVIEW_LIMIT]] == [
+        path["id"] for path in paths[:CANDIDATE_PREVIEW_LIMIT]
+    ]
     overflow = expanded[CANDIDATE_PREVIEW_LIMIT]
     assert overflow.className == "path-list-overflow"
     assert [card.id["path_id"] for card in overflow.children] == [
-        path["id"] for path in paths if path["id"] not in preview_ids
+        path["id"] for path in paths[CANDIDATE_PREVIEW_LIMIT:]
     ]
     first_page = paths[:CANDIDATE_PREVIEW_LIMIT]
     assert [card.id["path_id"] for card in render_candidate_path_cards(first_page, first_page[-1]["id"])] == [
         path["id"] for path in first_page
     ]
+
+
+@pytest.mark.parametrize("selected_path_id", ["path-4", "path-5"])
+def test_expanded_candidate_selection_preserves_original_order(selected_path_id) -> None:
+    paths = [{"id": f"path-{index}", "summary": f"Path {index}"} for index in range(1, 6)]
+    expanded = render_candidate_path_cards(paths, selected_path_id, expanded=True)
+    cards = [*expanded[:CANDIDATE_PREVIEW_LIMIT], *expanded[CANDIDATE_PREVIEW_LIMIT].children]
+
+    assert [card.id["path_id"] for card in cards] == [path["id"] for path in paths]
+    assert [card.id["path_id"] for card in cards if card.className.endswith("selected")] == [selected_path_id]
 
 
 def test_candidate_cards_show_endpoint_node_ids_only_as_metadata() -> None:

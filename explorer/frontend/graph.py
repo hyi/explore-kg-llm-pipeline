@@ -341,8 +341,6 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
     config = expansion.get("config") or {}
     provider_mode = expansion.get("provider_mode") or summary.get("provider_mode") or robokop_state.get("provider_mode")
     error = robokop_state.get("error")
-    category_options = _dropdown_options(summary.get("categories") or [])
-    predicate_options = _dropdown_options(summary.get("predicates") or [])
     limit_value = int(config.get("limit") or context.get("robokop_limit") or 10)
     offset_value = int(config.get("offset") or context.get("robokop_offset") or 0)
     selected_edge_ids = set(robokop_state.get("selected_edge_ids") or [])
@@ -356,45 +354,22 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
     ]
     if error:
         children.append(html.Div(error, className="node-inline-message error"))
+    if robokop_state.get("summary_error"):
+        children.append(html.Div(
+            "Total connections unavailable; edge browsing still works.",
+            title=robokop_state["summary_error"],
+            className="node-inline-message",
+        ))
     if bridge.get("status") and bridge.get("status") != "resolved":
         children.append(html.Div(bridge.get("reason") or bridge["status"], className="node-inline-message"))
     if provider_mode == "fixture" and (summary or expansion):
         children.append(html.Span("Fixture data (not live)", className="source-badge fixture"))
     children.extend(
         [
-            html.Details(
+            html.Div(
                 [
-                    html.Summary("ROBOKOP filters"),
                     html.Div(
                         [
-                            html.Label("Neighbor category", htmlFor="robokop-category-filter-dropdown"),
-                            dcc.Dropdown(
-                                id="robokop-category-filter-dropdown",
-                                options=category_options,
-                                value=config.get("category"),
-                                placeholder="Any category",
-                                className="expansion-select",
-                            ),
-                            html.Label("Predicate", htmlFor="robokop-predicate-filter-dropdown"),
-                            dcc.Dropdown(
-                                id="robokop-predicate-filter-dropdown",
-                                options=predicate_options,
-                                value=config.get("predicate"),
-                                placeholder="Any predicate",
-                                className="expansion-select",
-                            ),
-                            html.Label("Direction", htmlFor="robokop-direction-dropdown"),
-                            dcc.Dropdown(
-                                id="robokop-direction-dropdown",
-                                options=[
-                                    {"label": "Either", "value": "either"},
-                                    {"label": "Outgoing", "value": "outgoing"},
-                                    {"label": "Incoming", "value": "incoming"},
-                                ],
-                                value=config.get("direction") or "either",
-                                clearable=False,
-                                className="expansion-select",
-                            ),
                             html.Label("Page size", htmlFor="robokop-limit-input"),
                             dcc.Input(
                                 id="robokop-limit-input",
@@ -405,24 +380,9 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
                                 value=limit_value,
                                 className="expansion-number",
                             ),
-                            html.Label("Start offset", htmlFor="robokop-offset-input"),
-                            dcc.Input(
-                                id="robokop-offset-input",
-                                type="number",
-                                min=0,
-                                step=1,
-                                value=offset_value,
-                                className="expansion-number",
-                            ),
                         ],
-                        className="expansion-control-row",
+                        className="robokop-page-size",
                     ),
-                ],
-                className="expansion-filter-panel robokop-filter-panel",
-                open=False,
-            ),
-            html.Div(
-                [
                     html.Button(
                         "Fetch ROBOKOP edges",
                         id="robokop-expand-button",
@@ -430,7 +390,7 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
                         className="secondary-button",
                     ),
                 ],
-                className="button-row",
+                className="robokop-page-controls",
             ),
         ]
     )
@@ -479,34 +439,61 @@ def _robokop_controls(context: dict[str, Any], selected_node_id: str, node: dict
                     id="robokop-next-page-button",
                     n_clicks=0,
                     className="secondary-button",
+                    disabled=not robokop_has_next_page(expansion),
                 ),
             ],
             className="button-row",
-            style={} if expansion and summary.get("total_edges", 1) else {"display": "none"},
+            style={} if expansion and summary.get("total_edges") != 0 else {"display": "none"},
         )
     )
     return html.Div(children, className="robokop-controls")
 
 
-def _robokop_page_status(expansion: dict[str, Any], *, summary: dict[str, Any] | None = None) -> Any:
+def robokop_has_next_page(expansion: dict[str, Any]) -> bool:
+    if not expansion:
+        return False
+    config = expansion.get("config") or {}
+    diagnostics = expansion.get("diagnostics") or {}
+    page_count = diagnostics.get("page_count")
+    if page_count is None:
+        page_count = len(expansion.get("edges") or []) + int(diagnostics.get("direction_filtered_count") or 0)
+    offset = int(config.get("offset") or 0)
+    total_available = expansion.get("total_available")
+    if total_available is not None:
+        return offset + int(page_count) < int(total_available)
+    return int(page_count) >= int(config.get("limit") or 10)
+
+
+def robokop_page_message(expansion: dict[str, Any], *, summary: dict[str, Any] | None = None) -> str:
     edges = expansion.get("edges") or []
     diagnostics = expansion.get("diagnostics") or {}
     filtered_count = int(diagnostics.get("direction_filtered_count") or 0)
-    if summary and not summary.get("total_edges"):
-        return html.Div("No ROBOKOP connections found for this bridge.", className="node-inline-message")
+    if summary and summary.get("total_edges") == 0:
+        return "No ROBOKOP connections found for this bridge."
+    total_edges = (summary or {}).get("total_edges")
     message = (
-        f"ROBOKOP reports {summary['total_edges']} connection{'s' if summary['total_edges'] != 1 else ''}"
-        if summary else "ROBOKOP"
+        f"ROBOKOP reports {total_edges} connection{'s' if total_edges != 1 else ''}"
+        if total_edges is not None else "ROBOKOP"
     )
     if expansion:
-        candidate_text = f"fetched {len(edges)} candidate{'s' if len(edges) != 1 else ''}."
-        message += f"; {candidate_text}" if summary else f" {candidate_text}"
+        candidate_text = f"fetched {len(edges)} candidate{'s' if len(edges) != 1 else ''}"
+        message += f"; {candidate_text}." if total_edges is not None else f" {candidate_text} from this page."
+        if total_edges is None and expansion.get("total_available") is not None:
+            message += f" {expansion['total_available']} connections in total."
     else:
         message += "."
     if filtered_count:
-        message += f" {filtered_count} connections excluded by direction; choose Either to include them."
+        message += f" {filtered_count} connections excluded by direction."
     if expansion and not edges:
-        message += " No matching connections in this page. Change filters or try Next."
+        message += " No connections in this page."
+        if robokop_has_next_page(expansion):
+            message += " Try Next."
+    return message
+
+
+def _robokop_page_status(expansion: dict[str, Any], *, summary: dict[str, Any] | None = None) -> Any:
+    edges = expansion.get("edges") or []
+    message = robokop_page_message(expansion, summary=summary)
     return html.Div(message, className="node-inline-message" if not edges else "node-labels")
 
 
